@@ -38,7 +38,7 @@ getrandom = "0.4"
 hex = "0.4"
 minisign = "0.9"
 hostname = "0.4"
-mpp = { version = "0.9.3", features = ["tempo", "evm", "utils", "client", "server"] }
+mpp = { version = "0.10.0", features = ["tempo", "evm", "utils", "client", "server"] }
 posthog-rs = "0.5.3"
 qrcode = { version = "0.14", default-features = false }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "http2"] }
