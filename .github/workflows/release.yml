@@ -52,7 +52,7 @@ jobs:
           token: ${{ steps.app-token.outputs.token }}
           persist-credentials: false
 
-      - uses: tempoxyz/changelogs@54f693643e1bd8469293bdfcbfb647bceb559490 # changelogs@0.6.3 + unified PR title + install from source
+      - uses: tempoxyz/changelogs@de0250123a1d70a2b64a458bd5efcf313986df7a # changelogs@0.6.3 + unified PR title + install from source
         if: steps.release-bot.outputs.configured == 'true'
         id: changelogs
         with:
