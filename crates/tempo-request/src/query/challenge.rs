@@ -232,15 +232,27 @@ pub(crate) fn parse_payment_challenge(
     keystore: &Keystore,
     configured_network: Option<NetworkId>,
 ) -> Result<ParsedChallenge, TempoError> {
-    let www_auth = response
-        .header("www-authenticate")
-        .ok_or_else(|| PaymentError::MissingHeader("WWW-Authenticate".to_string()))?;
+    let values = response.headers_all("www-authenticate");
+    if values.is_empty() {
+        return Err(PaymentError::MissingHeader("WWW-Authenticate".to_string()).into());
+    }
 
-    // Split merged challenges (RFC 9110 §11.6.1) and decode each.
-    let parts = split_payment_challenges(www_auth);
+    // RFC 9110 §5.3 permits a server to emit `WWW-Authenticate` either as a
+    // single comma-joined header or as one header per challenge. Collect every
+    // value so we don't silently drop challenges that arrived on separate lines,
+    // then split merged challenges (RFC 9110 §11.6.1).
+    let merged = values.join(", ");
+    let parts = split_payment_challenges(&merged);
+    let mut parse_errors: Vec<mpp::MppError> = Vec::new();
     let raw_challenges: Vec<_> = mpp::parse_www_authenticate_all(parts)
         .into_iter()
-        .filter_map(|r| r.ok())
+        .filter_map(|r| match r {
+            Ok(c) => Some(c),
+            Err(e) => {
+                parse_errors.push(e);
+                None
+            }
+        })
         .collect();
 
     // Decode every challenge. Successful decodes become candidates; the first
@@ -260,6 +272,13 @@ pub(crate) fn parse_payment_challenge(
     }
 
     if candidates.is_empty() {
+        if let Some(parse_err) = parse_errors.into_iter().next() {
+            return Err(PaymentError::ChallengeParseSource {
+                context: "WWW-Authenticate header",
+                source: Box::new(parse_err),
+            }
+            .into());
+        }
         // Preserve the precise decode error for single-challenge responses;
         // fall back to the historical aggregate "unsupported method" message
         // when nothing decodable was present.
@@ -571,6 +590,113 @@ limit = "1000000"
         assert!(
             msg.contains("Wallet has keys for: tempo/"),
             "should list mainnet as held: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_parse_payment_challenge_separate_headers_tempo_first() {
+        let tempo = mpp::PaymentChallenge::new(
+            "tempo-id",
+            "realm",
+            "tempo",
+            "charge",
+            mpp::Base64UrlJson::from_value(&serde_json::json!({
+                "amount": "1000",
+                "currency": "0x20c0000000000000000000000000000000000000",
+                "payTo": "0x1111111111111111111111111111111111111111",
+                "methodDetails": { "chainId": 4217 }
+            }))
+            .unwrap(),
+        );
+        let stripe = mpp::PaymentChallenge::new(
+            "stripe-id",
+            "realm",
+            "stripe",
+            "charge",
+            mpp::Base64UrlJson::from_value(&serde_json::json!({"amount": "100"})).unwrap(),
+        );
+        let tempo_hdr = mpp::format_www_authenticate(&tempo).unwrap();
+        let stripe_hdr = mpp::format_www_authenticate(&stripe).unwrap();
+        let response = HttpResponse::for_test_with_headers(
+            402,
+            b"",
+            &[
+                ("www-authenticate", &tempo_hdr),
+                ("www-authenticate", &stripe_hdr),
+            ],
+        );
+        let parsed = parse_payment_challenge(&response, &Keystore::default(), None).unwrap();
+        assert_eq!(parsed.challenge.id, "tempo-id");
+    }
+
+    #[test]
+    fn test_parse_payment_challenge_separate_headers_stripe_first() {
+        // Same scenario but with stripe listed first; the bug previously hid
+        // the tempo header behind `.rev().find()` returning only the last value.
+        let stripe = mpp::PaymentChallenge::new(
+            "stripe-id",
+            "realm",
+            "stripe",
+            "charge",
+            mpp::Base64UrlJson::from_value(&serde_json::json!({"amount": "100"})).unwrap(),
+        );
+        let tempo = mpp::PaymentChallenge::new(
+            "tempo-id",
+            "realm",
+            "tempo",
+            "charge",
+            mpp::Base64UrlJson::from_value(&serde_json::json!({
+                "amount": "1000",
+                "currency": "0x20c0000000000000000000000000000000000000",
+                "payTo": "0x1111111111111111111111111111111111111111",
+                "methodDetails": { "chainId": 4217 }
+            }))
+            .unwrap(),
+        );
+        let stripe_hdr = mpp::format_www_authenticate(&stripe).unwrap();
+        let tempo_hdr = mpp::format_www_authenticate(&tempo).unwrap();
+        let response = HttpResponse::for_test_with_headers(
+            402,
+            b"",
+            &[
+                ("www-authenticate", &stripe_hdr),
+                ("www-authenticate", &tempo_hdr),
+            ],
+        );
+        let parsed = parse_payment_challenge(&response, &Keystore::default(), None).unwrap();
+        assert_eq!(parsed.challenge.id, "tempo-id");
+    }
+
+    #[test]
+    fn test_parse_payment_challenge_surfaces_parse_error_over_unsupported_method() {
+        // A malformed tempo challenge (empty id, which mpp rejects) merged with a
+        // valid stripe challenge. The error should describe the parse failure, not
+        // claim that only the stripe method was offered.
+        let stripe = mpp::PaymentChallenge::new(
+            "stripe-id",
+            "realm",
+            "stripe",
+            "charge",
+            mpp::Base64UrlJson::from_value(&serde_json::json!({"amount": "100"})).unwrap(),
+        );
+        let stripe_hdr = mpp::format_www_authenticate(&stripe).unwrap();
+        let malformed_tempo =
+            r#"Payment id="", realm="r", method="tempo", intent="charge", request="e30""#;
+        let merged = format!("{malformed_tempo}, {stripe_hdr}");
+        let response =
+            HttpResponse::for_test_with_headers(402, b"", &[("www-authenticate", &merged)]);
+
+        let err = match parse_payment_challenge(&response, &Keystore::default(), None) {
+            Ok(_) => panic!("expected parse failure to surface"),
+            Err(err) => err.to_string(),
+        };
+        assert!(
+            err.contains("Failed to parse"),
+            "error should describe the parse failure: {err}",
+        );
+        assert!(
+            !err.contains("Unsupported payment method"),
+            "parse failure should not be masked as an unsupported-method error: {err}",
         );
     }
 
