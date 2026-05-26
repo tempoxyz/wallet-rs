@@ -447,6 +447,7 @@ fn save_keys(
     entry.set_key_address(Some(access_key_address));
     entry.key = Some(access_key_hex);
     entry.key_authorization = key_auth_hex;
+    entry.provisioned = false;
 
     keys.save()
 }
