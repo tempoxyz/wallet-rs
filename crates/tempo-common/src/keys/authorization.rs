@@ -155,6 +155,9 @@ pub fn sign(
         expiry: std::num::NonZero::new(expiry_secs),
         limits: Some(token_limits),
         allowed_calls: None,
+        witness: None,
+        is_admin: false,
+        account: None,
     };
     let sig = wallet_signer
         .sign_hash_sync(&auth.signature_hash())
@@ -217,6 +220,9 @@ mod tests {
             expiry: std::num::NonZero::new(9_999_999_999),
             limits: None,
             allowed_calls: None,
+            witness: None,
+            is_admin: false,
+            account: None,
         };
 
         let sig = signer.sign_hash_sync(&auth.signature_hash()).unwrap();
