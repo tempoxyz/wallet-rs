@@ -1,38 +1,36 @@
 [package]
-name = "tempo-request"
+name = "tempo-cards"
 version.workspace = true
 edition = "2021"
-description = "Make an HTTP request"
+description = "Issue and manage Tempo wallet-backed cards"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/tempoxyz/wallet"
 publish = false
-readme = "../../README.md"
-keywords = ["http", "cli", "payments", "mpp"]
+readme = "README.md"
+keywords = ["cards", "cli", "payments", "stripe", "bridge"]
 categories = ["command-line-utilities"]
 
 [lints]
 workspace = true
 
 [[bin]]
-name = "tempo-request"
+name = "tempo-cards"
 path = "src/main.rs"
 
 [dependencies]
 tempo-common = { path = "../tempo-common" }
+tempo-primitives.workspace = true
 alloy.workspace = true
 base64.workspace = true
 clap.workspace = true
-futures.workspace = true
-fs2.workspace = true
 getrandom.workspace = true
 hex.workspace = true
 mpp.workspace = true
-reqwest = { workspace = true, features = ["stream", "multipart"] }
+reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-tempo-primitives.workspace = true
 tokio.workspace = true
-toon-format.workspace = true
+toml.workspace = true
 tracing.workspace = true
 url.workspace = true
 urlencoding.workspace = true
@@ -40,10 +38,10 @@ urlencoding.workspace = true
 [dev-dependencies]
 assert_cmd.workspace = true
 axum.workspace = true
-serde_json.workspace = true
 rusqlite.workspace = true
+serde_json.workspace = true
 serial_test.workspace = true
 tempfile.workspace = true
 tempo-test.workspace = true
-toml.workspace = true
-toon-format.workspace = true
+tokio.workspace = true
+url.workspace = true

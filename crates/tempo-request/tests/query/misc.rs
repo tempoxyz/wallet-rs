@@ -386,7 +386,11 @@ async fn retry_http_retries_on_specified_codes() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn network_mismatch_preserves_router_wording_and_exit_class() {
+async fn network_mismatch_returns_no_compatible_challenge_and_exit_class() {
+    // The server offers a single moderato challenge; `--network tempo`
+    // filters it out during selection, so no candidate survives and we
+    // surface `NoCompatibleChallenge` (E_PAYMENT) instead of the legacy
+    // post-selection router error.
     let server = MockServer::start_payment_deferred("Payment Required").await;
     let www_auth = charge_www_authenticate_with_realm("test-network-mismatch", &server.base_url);
     server.set_www_authenticate(&www_auth);
@@ -405,8 +409,12 @@ async fn network_mismatch_preserves_router_wording_and_exit_class() {
     );
     let combined = get_combined_output(&output);
     assert!(
-        combined.contains("Server requested network 'tempo-moderato' but --network is 'tempo'"),
-        "should preserve router mismatch wording: {combined}"
+        combined.contains("No payment challenge matches the configured wallet"),
+        "should surface NoCompatibleChallenge: {combined}"
+    );
+    assert!(
+        combined.contains("tempo-moderato"),
+        "should list the rejected moderato offer: {combined}"
     );
 }
 

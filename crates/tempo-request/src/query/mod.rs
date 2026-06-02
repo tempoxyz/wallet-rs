@@ -156,7 +156,8 @@ pub(crate) async fn run(ctx: &Context, query: QueryArgs) -> Result<(), TempoErro
         .unwrap_or(&target_url)
         .to_string();
 
-    let challenge = challenge::parse_payment_challenge(&response)?;
+    let challenge =
+        challenge::parse_payment_challenge(&response, &ctx.keys, prepared.http.network)?;
 
     if prepared.http.log_enabled() {
         eprintln!(
@@ -208,7 +209,13 @@ pub(crate) async fn run(ctx: &Context, query: QueryArgs) -> Result<(), TempoErro
             status_code,
             response,
         }) => {
-            pay_analytics.track_success(tx_hash, channel_id, &target_url, &method_str, status_code);
+            pay_analytics.track_success(
+                tx_hash,
+                channel_id,
+                &sanitized_url,
+                &method_str,
+                status_code,
+            );
             if let Some(resp) = response {
                 // Display receipt summary for charge responses
                 if !is_session {

@@ -39,12 +39,11 @@ impl HttpResponse {
     pub(crate) async fn from_reqwest(mut response: reqwest::Response) -> HttpResult<Self> {
         let status_code = response.status().as_u16();
         let final_url = Some(response.url().to_string());
-        let mut headers = headers_from_reqwest(response.headers());
+        let headers = headers_from_reqwest(response.headers());
         let mut body = Vec::new();
         while let Some(chunk) = response.chunk().await.map_err(NetworkError::Reqwest)? {
             body.extend_from_slice(&chunk);
         }
-        headers.extend(headers_from_reqwest(response.headers()));
 
         Ok(Self {
             status_code,
@@ -70,7 +69,9 @@ impl HttpResponse {
 
     /// Look up a header value by name.
     ///
-    /// Header lookup is case-insensitive.
+    /// Header lookup is case-insensitive. Returns the last value if the header
+    /// appears multiple times (e.g. multiple `Set-Cookie` lines); use
+    /// [`headers_all`](Self::headers_all) to retrieve every value.
     pub(crate) fn header(&self, name: &str) -> Option<&str> {
         let name = normalize_header_name(name);
         self.headers
@@ -78,6 +79,19 @@ impl HttpResponse {
             .rev()
             .find(|(k, _)| k == &name)
             .map(|(_, v)| v.as_str())
+    }
+
+    /// Return every value for a header name, in the order they were received.
+    ///
+    /// Header lookup is case-insensitive. Use this for headers that may
+    /// legitimately repeat per RFC 9110 §5.3, e.g. `WWW-Authenticate`.
+    pub(crate) fn headers_all(&self, name: &str) -> Vec<&str> {
+        let name = normalize_header_name(name);
+        self.headers
+            .iter()
+            .filter(|(k, _)| k == &name)
+            .map(|(_, v)| v.as_str())
+            .collect()
     }
 }
 
@@ -157,6 +171,30 @@ mod tests {
             final_url: None,
         };
         assert_eq!(resp.header("set-cookie"), Some("b=2"));
+    }
+
+    #[test]
+    fn headers_all_returns_every_value_in_order() {
+        let resp = HttpResponse {
+            status_code: 401,
+            headers: vec![
+                ("www-authenticate".into(), "Payment id=\"a\"".into()),
+                ("content-type".into(), "text/plain".into()),
+                ("www-authenticate".into(), "Payment id=\"b\"".into()),
+            ],
+            body: Vec::new(),
+            final_url: None,
+        };
+        assert_eq!(
+            resp.headers_all("WWW-Authenticate"),
+            vec!["Payment id=\"a\"", "Payment id=\"b\""],
+        );
+    }
+
+    #[test]
+    fn headers_all_empty_for_missing_key() {
+        let resp = HttpResponse::for_test(200, b"");
+        assert!(resp.headers_all("x-missing").is_empty());
     }
 
     #[test]

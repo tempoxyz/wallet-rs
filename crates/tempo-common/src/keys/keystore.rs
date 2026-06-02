@@ -123,6 +123,43 @@ impl Keystore {
         self.has_wallet() && self.keys.iter().any(|k| k.chain_id == network.chain_id())
     }
 
+    /// Check if a wallet is connected with a key for the given network AND currency.
+    ///
+    /// Used to filter multi-challenge 402 responses down to challenges the wallet
+    /// can actually satisfy. Returns `true` when:
+    ///
+    /// - the keystore is empty (nothing to filter on; preserves prior behavior for
+    ///   unauthenticated flows like `--dry-run` without `tempo wallet login`), or
+    /// - the keystore is ephemeral (a raw `--private-key` can sign anything), or
+    /// - any key in the store covers the requested `network` (matching
+    ///   `chain_id`, or a direct-EOA key that can sign on any network), AND
+    /// - that key's `limits` either include `currency` (address compare) or
+    ///   are empty (unlimited key).
+    ///
+    /// `currency` is the on-wire token address from the challenge (`0x…`). If it
+    /// doesn't parse as an `Address`, currency-level filtering is skipped and
+    /// network-only matching is used.
+    ///
+    /// The network match mirrors [`Self::key_for_network`] so this predicate
+    /// agrees with later signer resolution.
+    #[must_use]
+    pub fn has_key_for_network_and_currency(&self, network: NetworkId, currency: &str) -> bool {
+        if self.is_empty() || self.ephemeral {
+            return true;
+        }
+        if !self.has_wallet() {
+            return false;
+        }
+        let currency_addr = currency.parse::<Address>().ok();
+        self.keys.iter().any(|k| {
+            let network_matches = k.chain_id == network.chain_id() || k.is_direct_eoa_key();
+            let currency_matches = currency_addr.is_none_or(|addr| {
+                k.limits.is_empty() || k.limits.iter().any(|l| l.currency == addr)
+            });
+            network_matches && currency_matches
+        })
+    }
+
     /// Ensure a wallet with a key for the given network is available.
     ///
     /// Returns an error with a helpful message if no wallet or key is configured.
@@ -245,6 +282,24 @@ impl Keystore {
             let last = self.keys.len() - 1;
             &mut self.keys[last]
         }
+    }
+
+    /// Mark an access key as provisioned after an on-chain check confirms it.
+    ///
+    /// Returns `true` when a matching entry was found and changed.
+    pub fn mark_provisioned_address(&mut self, wallet_address: Address, chain_id: u64) -> bool {
+        let Some(entry) = self
+            .keys
+            .iter_mut()
+            .find(|k| k.wallet_address_matches(wallet_address) && k.chain_id == chain_id)
+        else {
+            return false;
+        };
+        if entry.provisioned {
+            return false;
+        }
+        entry.provisioned = true;
+        true
     }
 }
 
@@ -548,6 +603,34 @@ key_address = "0xsigner2"
         assert_eq!(keys.keys.len(), 2);
         assert_eq!(keys.keys[0].chain_id, 4217);
         assert_eq!(keys.keys[1].chain_id, 42431);
+    }
+
+    #[test]
+    fn test_mark_provisioned_address_only_updates_matching_chain() {
+        let mut keys = Keystore::default();
+        let wallet: Address = "0x1111111111111111111111111111111111111111"
+            .parse()
+            .unwrap();
+        keys.upsert_by_wallet_address_and_chain(wallet, 4217);
+        keys.upsert_by_wallet_address_and_chain(wallet, 42431);
+
+        assert!(keys.mark_provisioned_address(wallet, 4217));
+        assert!(!keys.mark_provisioned_address(wallet, 4217));
+        assert!(
+            keys.keys
+                .iter()
+                .find(|entry| entry.chain_id == 4217)
+                .unwrap()
+                .provisioned
+        );
+        assert!(
+            !keys
+                .keys
+                .iter()
+                .find(|entry| entry.chain_id == 42431)
+                .unwrap()
+                .provisioned
+        );
     }
 
     #[test]

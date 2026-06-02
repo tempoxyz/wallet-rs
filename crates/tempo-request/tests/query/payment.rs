@@ -253,6 +253,48 @@ async fn analytics_tx_hash_is_extracted_hex() {
     );
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn paid_success_analytics_redacts_url_query_params() {
+    let h = PaymentTestHarness::charge_with_body("paid analytics ok").await;
+    let events_path = h.temp.path().join("paid_events_url_redact.log");
+    let url_with_secrets = h.url("/api?api_key=sk_live_paid_secret&token=paid_bearer_secret");
+
+    let output = test_command(&h.temp)
+        .env("TEMPO_TEST_EVENTS", events_path.to_str().unwrap())
+        .args(["--no-proxy", "--dry-run", &url_with_secrets])
+        .output()
+        .unwrap();
+    assert_success(&output, "paid dry-run request should succeed");
+
+    let events = parse_events_log(&events_path);
+    let names: Vec<&str> = events.iter().map(|(name, _)| name.as_str()).collect();
+    assert!(
+        names.contains(&"payment succeeded"),
+        "missing payment succeeded event: {names:?}"
+    );
+    assert!(
+        names.contains(&"query succeeded"),
+        "missing query succeeded event: {names:?}"
+    );
+
+    for (name, props) in &events {
+        if let Some(url) = props.get("url").and_then(|value| value.as_str()) {
+            assert!(
+                !url.contains("sk_live_paid_secret"),
+                "event '{name}' leaks api_key in url: {url}"
+            );
+            assert!(
+                !url.contains("paid_bearer_secret"),
+                "event '{name}' leaks token in url: {url}"
+            );
+            assert!(
+                !url.contains('?'),
+                "event '{name}' has query params in url: {url}"
+            );
+        }
+    }
+}
+
 /// Test the 402 → payment → 200 charge flow with Keychain signing mode.
 ///
 /// Uses a different `wallet_address` than the derived address of the private
