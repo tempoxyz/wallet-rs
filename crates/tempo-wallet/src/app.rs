@@ -58,17 +58,49 @@ pub(crate) async fn run(mut cli: Cli) -> Result<(), TempoError> {
                     credits_to,
                     data,
                     value,
+                    mpp_challenge,
+                    mpp_challenge_file,
+                    mpp_client_id,
                     address,
                     ..
-                } => match (amount_cents, credits_to) {
-                    (Some(amount_cents), Some(to)) => {
-                        spend_credits::run(&ctx, amount_cents, to, data, value, address).await
+                } => {
+                    if let Some(challenge) = mpp_challenge {
+                        if amount_cents.is_some() || credits_to.is_some() || data != "0x" || value != "0" {
+                            Err(ConfigError::Invalid(
+                                "--mpp-challenge cannot be combined with --amount-cents, --to, --data, or --value".to_string(),
+                            )
+                            .into())
+                        } else {
+                            spend_credits::run_mpp(&ctx, challenge, mpp_client_id, address).await
+                        }
+                    } else if let Some(challenge_path) = mpp_challenge_file {
+                        if amount_cents.is_some() || credits_to.is_some() || data != "0x" || value != "0" {
+                            Err(ConfigError::Invalid(
+                                "--mpp-challenge-file cannot be combined with --amount-cents, --to, --data, or --value".to_string(),
+                            )
+                            .into())
+                        } else {
+                            spend_credits::run_mpp_file(
+                                &ctx,
+                                &challenge_path,
+                                mpp_client_id,
+                                address,
+                            )
+                            .await
+                        }
+                    } else {
+                        match (amount_cents, credits_to) {
+                            (Some(amount_cents), Some(to)) => {
+                                spend_credits::run(&ctx, amount_cents, to, data, value, address)
+                                    .await
+                            }
+                            _ => Err(ConfigError::Missing(
+                                "--amount-cents and --to are required when using --credits, unless --mpp-challenge is provided".to_string(),
+                            )
+                            .into()),
+                        }
                     }
-                    _ => Err(ConfigError::Missing(
-                        "--amount-cents and --to are required when using --credits".to_string(),
-                    )
-                    .into()),
-                },
+                }
                 Commands::Transfer {
                     amount,
                     token,

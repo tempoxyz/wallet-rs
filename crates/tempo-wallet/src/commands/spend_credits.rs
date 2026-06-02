@@ -1,13 +1,14 @@
 //! Spend credits via Coinflow redeem flow.
 
-use std::{io::Write, time::Duration};
+use std::{fs, io::Write, path::Path, time::Duration};
 
 use alloy::{
     primitives::{address, keccak256, Address, Bytes, TxKind, B256, U256},
     providers::Provider,
     sol,
+    sol_types::SolCall,
 };
-use mpp::client::tempo::signing::TempoSigningMode;
+use mpp::{client::tempo::signing::TempoSigningMode, tempo::TempoChargeExt};
 use serde::{Deserialize, Serialize};
 use tokio::time::sleep;
 
@@ -23,6 +24,12 @@ const COINFLOW_AUTH_SUBTOTAL_RETRY_BUFFER_CENTS: u64 = 1;
 const ACCOUNT_KEYCHAIN_ADDRESS: Address = address!("aaaaaaaa00000000000000000000000000000000");
 const KEY_AUTH_POLL_ATTEMPTS: usize = 20;
 const KEY_AUTH_POLL_INTERVAL: Duration = Duration::from_secs(1);
+
+sol! {
+    interface ITIP20Credits {
+        function transferWithMemo(address to, uint256 amount, bytes32 memo) external returns (bool);
+    }
+}
 
 sol! {
     #[sol(rpc)]
@@ -79,11 +86,59 @@ pub(crate) async fn run(
     value: String,
     address: Option<String>,
 ) -> Result<(), TempoError> {
+    let transaction_data = build_transaction_data(&to, &data, &value)?;
+
+    run_with_transaction_data(ctx, amount_cents, transaction_data, address).await
+}
+
+pub(crate) async fn run_mpp(
+    ctx: &Context,
+    challenge: String,
+    client_id: Option<String>,
+    address: Option<String>,
+) -> Result<(), TempoError> {
+    let challenge = parse_mpp_challenge(&challenge)?;
+    let mpp_transaction = build_mpp_transaction(&challenge, client_id.as_deref(), ctx)?;
+
+    if ctx.output_format == OutputFormat::Text {
+        eprintln!(
+            "Preparing MPP credits payment: {} cents to {} via {}",
+            mpp_transaction.amount_cents, mpp_transaction.recipient, mpp_transaction.token
+        );
+    }
+
+    run_with_transaction_data(
+        ctx,
+        mpp_transaction.amount_cents,
+        mpp_transaction.transaction_data,
+        address,
+    )
+    .await
+}
+
+pub(crate) async fn run_mpp_file(
+    ctx: &Context,
+    challenge_path: &Path,
+    client_id: Option<String>,
+    address: Option<String>,
+) -> Result<(), TempoError> {
+    let challenge = fs::read_to_string(challenge_path).map_err(|source| InputError::ReadFile {
+        path: challenge_path.display().to_string(),
+        source,
+    })?;
+    run_mpp(ctx, challenge, client_id, address).await
+}
+
+async fn run_with_transaction_data(
+    ctx: &Context,
+    amount_cents: u64,
+    transaction_data: serde_json::Value,
+    address: Option<String>,
+) -> Result<(), TempoError> {
     let auth_server_url =
         std::env::var("TEMPO_AUTH_URL").unwrap_or_else(|_| ctx.network.auth_url().to_string());
     let wallet = fund::resolve_address(address, &ctx.keys)?;
     let wallet_address = tempo_common::security::parse_address_input(&wallet, "wallet address")?;
-    let transaction_data = build_transaction_data(&to, &data, &value)?;
 
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(30))
@@ -161,6 +216,179 @@ pub(crate) async fn run(
     };
 
     result.render(ctx.output_format)
+}
+
+#[derive(Debug)]
+struct MppCreditsTransaction {
+    amount_cents: u64,
+    token: String,
+    recipient: String,
+    transaction_data: serde_json::Value,
+}
+
+fn parse_mpp_challenge(input: &str) -> Result<mpp::PaymentChallenge, TempoError> {
+    let trimmed = input.trim();
+    let challenge = trimmed
+        .lines()
+        .find_map(|line| {
+            let line = line.trim();
+            line.split_once(':').and_then(|(name, value)| {
+                name.eq_ignore_ascii_case("www-authenticate")
+                    .then_some(value.trim())
+            })
+        })
+        .unwrap_or(trimmed);
+
+    if challenge.starts_with('{') {
+        return serde_json::from_str(challenge)
+            .map_err(|source| NetworkError::ResponseParse {
+                context: "MPP challenge JSON",
+                source,
+            })
+            .map_err(Into::into);
+    }
+
+    mpp::PaymentChallenge::from_header(challenge)
+        .map_err(|error| ConfigError::Invalid(format!("invalid MPP challenge: {error}")).into())
+}
+
+fn build_mpp_transaction(
+    challenge: &mpp::PaymentChallenge,
+    client_id: Option<&str>,
+    ctx: &Context,
+) -> Result<MppCreditsTransaction, TempoError> {
+    if challenge.method.as_str() != "tempo" {
+        return Err(ConfigError::Invalid(format!(
+            "unsupported MPP method for Coinflow credits: {}",
+            challenge.method.as_str()
+        ))
+        .into());
+    }
+    if challenge.intent.as_str() != "charge" {
+        return Err(ConfigError::Invalid(format!(
+            "unsupported MPP intent for Coinflow credits: {}",
+            challenge.intent.as_str()
+        ))
+        .into());
+    }
+    if challenge.is_expired() {
+        return Err(ConfigError::Invalid("MPP challenge is expired".to_string()).into());
+    }
+
+    let charge: mpp::ChargeRequest = challenge
+        .request
+        .decode()
+        .map_err(|error| ConfigError::Invalid(format!("invalid MPP charge request: {error}")))?;
+    if let Some(chain_id) = charge.chain_id() {
+        if chain_id != ctx.network.chain_id() {
+            return Err(ConfigError::Invalid(format!(
+                "MPP challenge is for chain {chain_id}, but the selected network is {} (chain {})",
+                ctx.network,
+                ctx.network.chain_id()
+            ))
+            .into());
+        }
+    }
+    if charge
+        .splits()
+        .map_err(|error| ConfigError::Invalid(format!("invalid MPP splits: {error}")))?
+        .is_some_and(|splits| !splits.is_empty())
+    {
+        return Err(ConfigError::Invalid(
+            "MPP split payments are not supported with Coinflow credits yet".to_string(),
+        )
+        .into());
+    }
+
+    let token_config = ctx.network.token();
+    let token = tempo_common::security::parse_address_input(&charge.currency, "MPP currency")?;
+    if token != token_config.address {
+        return Err(ConfigError::Invalid(format!(
+            "MPP challenge currency {token:#x} does not match {} on {} ({:#x})",
+            token_config.symbol, ctx.network, token_config.address
+        ))
+        .into());
+    }
+
+    let recipient = charge.recipient.as_deref().ok_or_else(|| {
+        ConfigError::Invalid("MPP challenge is missing a recipient address".to_string())
+    })?;
+    let recipient_address =
+        tempo_common::security::parse_address_input(recipient, "MPP recipient")?;
+    let amount_atomic = charge
+        .parse_amount()
+        .map_err(|error| ConfigError::Invalid(format!("invalid MPP amount: {error}")))?;
+    let amount = U256::from(amount_atomic);
+    let amount_cents = amount_to_usd_cents(amount_atomic, token_config.decimals)?;
+    let memo = match charge.memo() {
+        Some(memo) => parse_memo_hex(&memo)?,
+        None => mpp::tempo::attribution::encode(&challenge.id, &challenge.realm, client_id),
+    };
+    let data = Bytes::from(
+        ITIP20Credits::transferWithMemoCall {
+            to: recipient_address,
+            amount,
+            memo: B256::from(memo),
+        }
+        .abi_encode(),
+    );
+
+    Ok(MppCreditsTransaction {
+        amount_cents,
+        token: format!("{token:#x}"),
+        recipient: format!("{recipient_address:#x}"),
+        transaction_data: build_transaction_data(
+            &format!("{token:#x}"),
+            &format!("{data:#x}"),
+            "0",
+        )?,
+    })
+}
+
+fn amount_to_usd_cents(amount_atomic: u128, decimals: u8) -> Result<u64, TempoError> {
+    if decimals < 2 {
+        return Err(ConfigError::Invalid(format!(
+            "cannot convert token with {decimals} decimals to USD cents"
+        ))
+        .into());
+    }
+    let base_units_per_cent = 10u128.pow(u32::from(decimals - 2));
+    if amount_atomic == 0 {
+        return Err(ConfigError::Invalid(
+            "MPP challenge amount must be greater than zero".to_string(),
+        )
+        .into());
+    }
+    if !amount_atomic.is_multiple_of(base_units_per_cent) {
+        return Err(ConfigError::Invalid(format!(
+            "MPP challenge amount {amount_atomic} cannot be represented exactly in Coinflow credits cents for a {decimals}-decimal token"
+        ))
+        .into());
+    }
+
+    u64::try_from(amount_atomic / base_units_per_cent).map_err(|_| {
+        ConfigError::Invalid(format!(
+            "MPP challenge amount {amount_atomic} is too large for Coinflow credits"
+        ))
+        .into()
+    })
+}
+
+fn parse_memo_hex(memo: &str) -> Result<[u8; 32], TempoError> {
+    let memo_hex = memo.strip_prefix("0x").unwrap_or(memo);
+    let bytes = hex::decode(memo_hex)
+        .map_err(|_| InputError::InvalidHexInput(format!("invalid MPP memo: {memo}")))?;
+    if bytes.len() != 32 {
+        return Err(InputError::InvalidHexInput(format!(
+            "invalid MPP memo length: expected 32 bytes, got {}",
+            bytes.len()
+        ))
+        .into());
+    }
+
+    let mut memo_bytes = [0u8; 32];
+    memo_bytes.copy_from_slice(&bytes);
+    Ok(memo_bytes)
 }
 
 async fn ensure_access_key_authorized(
@@ -814,6 +1042,55 @@ mod tests {
         assert!(err
             .to_string()
             .contains("Coinflow credits redeem does not support non-zero ETH value"));
+    }
+
+    #[test]
+    fn parse_mpp_challenge_accepts_www_authenticate_header_line() {
+        let request = mpp::Base64UrlJson::from_value(&serde_json::json!({
+            "amount": "10000",
+            "currency": "0x20C000000000000000000000b9537d11c60E8b50",
+            "recipient": TEST_ADDRESS,
+            "methodDetails": { "chainId": 4217 }
+        }))
+        .unwrap();
+        let challenge = mpp::PaymentChallenge::new(
+            "challenge-123",
+            "api.example.com",
+            "tempo",
+            "charge",
+            request,
+        );
+        let header = mpp::format_www_authenticate(&challenge).unwrap();
+
+        let parsed = parse_mpp_challenge(&format!("WWW-Authenticate: {header}")).unwrap();
+
+        assert_eq!(parsed.id, "challenge-123");
+        assert_eq!(parsed.realm, "api.example.com");
+    }
+
+    #[test]
+    fn converts_six_decimal_usdc_amount_to_coinflow_cents() {
+        assert_eq!(amount_to_usd_cents(10_000, 6).unwrap(), 1);
+        assert_eq!(amount_to_usd_cents(1_230_000, 6).unwrap(), 123);
+    }
+
+    #[test]
+    fn rejects_mpp_amounts_that_do_not_fit_coinflow_cents() {
+        let err = amount_to_usd_cents(1, 6).unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("cannot be represented exactly in Coinflow credits cents"));
+    }
+
+    #[test]
+    fn parses_32_byte_mpp_memo_hex() {
+        let memo =
+            parse_memo_hex("0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef")
+                .unwrap();
+
+        assert_eq!(memo[0], 0x12);
+        assert_eq!(memo[31], 0xef);
     }
 
     #[test]

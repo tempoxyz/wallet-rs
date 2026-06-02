@@ -1,5 +1,7 @@
 //! CLI argument definitions and parsing.
 
+use std::path::PathBuf;
+
 use clap::{Parser, Subcommand};
 
 /// Long version string including git commit, build date, and profile.
@@ -28,6 +30,7 @@ pub(crate) struct Cli {
 }
 
 #[derive(Subcommand, Debug)]
+#[allow(clippy::large_enum_variant)]
 pub(crate) enum Commands {
     /// Sign up or log in to your Tempo wallet
     #[command(display_order = 1)]
@@ -58,11 +61,12 @@ pub(crate) enum Commands {
     Keys,
     /// Transfer tokens to an address
     #[command(display_order = 6, arg_required_else_help = true)]
-    #[command(after_help = "\
+    #[command(after_help = r#"
 Examples:
   tempo wallet transfer 1.00 0x20c0...b50 0x70997...9C8
   tempo wallet transfer 50 0x20c0...b50 0x70997...9C8 --dry-run
-  tempo wallet transfer --credits --amount-cents 500 --to 0x20c0...b50")]
+  tempo wallet transfer --credits --amount-cents 500 --to 0x20c0...b50
+  tempo wallet transfer --credits --mpp-challenge <WWW_AUTHENTICATE>"#)]
     Transfer {
         /// Amount in human units ("1.00", "50") — required for token transfers
         #[arg(required_unless_present = "credits")]
@@ -94,6 +98,15 @@ Examples:
         /// ETH value in wei when using --credits (default: 0)
         #[arg(long, requires = "credits", default_value = "0")]
         value: String,
+        /// MPP WWW-Authenticate challenge when using --credits
+        #[arg(long, requires = "credits", conflicts_with = "mpp_challenge_file")]
+        mpp_challenge: Option<String>,
+        /// File containing an MPP WWW-Authenticate challenge when using --credits
+        #[arg(long, requires = "credits", conflicts_with = "mpp_challenge")]
+        mpp_challenge_file: Option<PathBuf>,
+        /// Optional client ID to include in the generated MPP attribution memo
+        #[arg(long, requires = "credits")]
+        mpp_client_id: Option<String>,
         /// Wallet address (defaults to current wallet)
         #[arg(long)]
         address: Option<String>,
