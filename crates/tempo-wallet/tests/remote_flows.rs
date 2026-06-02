@@ -489,10 +489,7 @@ async fn fund_no_browser_prints_remote_safe_handoff_copy_and_detects_balance_cha
     let temp = build_fund_temp(&rpc.base_url);
 
     let output = test_command(&temp)
-        .env(
-            "TEMPO_AUTH_URL",
-            "https://wallet.moderato.tempo.xyz/cli-auth",
-        )
+        .env("TEMPO_AUTH_URL", "https://wallet.tempo.xyz/cli-auth")
         .args(["-n", "tempo-moderato", "fund", "--no-browser"])
         .output()
         .unwrap();
@@ -510,10 +507,7 @@ async fn fund_no_browser_json_prints_remote_handoff() {
     let temp = build_fund_temp(&rpc.base_url);
 
     let output = test_command(&temp)
-        .env(
-            "TEMPO_AUTH_URL",
-            "https://wallet.moderato.tempo.xyz/cli-auth",
-        )
+        .env("TEMPO_AUTH_URL", "https://wallet.tempo.xyz/cli-auth")
         .args(["-j", "-n", "tempo-moderato", "fund", "--no-browser"])
         .output()
         .unwrap();
@@ -531,10 +525,7 @@ async fn fund_no_browser_toon_prints_remote_handoff() {
     let temp = build_fund_temp(&rpc.base_url);
 
     let output = test_command(&temp)
-        .env(
-            "TEMPO_AUTH_URL",
-            "https://wallet.moderato.tempo.xyz/cli-auth",
-        )
+        .env("TEMPO_AUTH_URL", "https://wallet.tempo.xyz/cli-auth")
         .args(["-t", "-n", "tempo-moderato", "fund", "--no-browser"])
         .output()
         .unwrap();
@@ -552,10 +543,7 @@ async fn fund_default_flow_keeps_local_copy_and_does_not_print_remote_handoff_te
     let temp = build_fund_temp(&rpc.base_url);
 
     let output = test_command(&temp)
-        .env(
-            "TEMPO_AUTH_URL",
-            "https://wallet.moderato.tempo.xyz/cli-auth",
-        )
+        .env("TEMPO_AUTH_URL", "https://wallet.tempo.xyz/cli-auth")
         .args(["-n", "tempo-moderato", "fund"])
         .output()
         .unwrap();

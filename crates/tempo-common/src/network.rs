@@ -145,7 +145,7 @@ impl NetworkId {
     pub const fn auth_url(&self) -> &'static str {
         match self {
             Self::Tempo => "https://wallet.tempo.xyz/cli-auth",
-            Self::TempoModerato => "https://wallet.moderato.tempo.xyz/cli-auth",
+            Self::TempoModerato => "https://wallet.tempo.xyz/cli-auth",
         }
     }
 
@@ -405,9 +405,10 @@ mod tests {
     #[test]
     fn test_auth_url() {
         assert!(NetworkId::Tempo.auth_url().contains("wallet.tempo.xyz"));
-        assert!(NetworkId::TempoModerato
-            .auth_url()
-            .contains("wallet.moderato.tempo.xyz"));
+        assert_eq!(
+            NetworkId::TempoModerato.auth_url(),
+            "https://wallet.tempo.xyz/cli-auth"
+        );
     }
 
     #[test]
