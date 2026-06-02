@@ -25,13 +25,23 @@ use tempo_common::payment::{classify_payment_error, map_mpp_validation_error};
 /// transaction data so charge payments can be attributed to the Tempo CLI.
 const CLIENT_ID: &str = "tempo-wallet";
 
-/// Whether a post-submission HTTP status code warrants a provisioning retry.
+/// Whether a post-submission response warrants a provisioning retry.
 ///
 /// Only auth/payment codes (401–403) and server errors (5xx) are retried.
 /// Other 4xx codes (400 body validation, 404, 422, 429, etc.) are not
 /// payment-related and retrying with key_authorization would be wasteful.
-const fn is_retriable_payment_status(status: u16) -> bool {
-    matches!(status, 401..=403 | 500..=599)
+fn is_retriable_payment_rejection(response: &HttpResponse) -> bool {
+    if matches!(response.status_code, 401..=403 | 500..=599) {
+        return true;
+    }
+
+    // Some MPP servers wrap Tempo RPC failures behind a generic payment proof
+    // error. Treat that specific wrapper as payment-related so first-use access
+    // key provisioning can retry with key_authorization attached.
+    response
+        .body_string()
+        .ok()
+        .is_some_and(|body| body.to_ascii_lowercase().contains("payment_proof_invalid"))
 }
 
 /// Handle an MPP charge payment flow (402 with intent="charge").
@@ -124,44 +134,43 @@ pub(super) async fn handle_charge_request(
     // retry with provisioning. The server validates the transaction on-chain, and
     // it may fail when the access key isn't provisioned even though signing
     // succeeded locally (the optimistic path omits key_authorization).
-    let resp =
-        if is_retriable_payment_status(resp.status_code) && signer.has_stored_key_authorization() {
-            if http.log_enabled() {
-                eprintln!(
-                    "Server rejected payment (HTTP {}), retrying with key authorization...",
-                    resp.status_code
-                );
-                if let Ok(body) = resp.body_string() {
-                    eprintln!("Rejection body: {}", sanitize_for_terminal(&body));
-                }
+    let resp = if is_retriable_payment_rejection(&resp) && signer.has_stored_key_authorization() {
+        if http.log_enabled() {
+            eprintln!(
+                "Server rejected payment (HTTP {}), retrying with key authorization...",
+                resp.status_code
+            );
+            if let Ok(body) = resp.body_string() {
+                eprintln!("Rejection body: {}", sanitize_for_terminal(&body));
             }
-            let provisioning_signer =
-                signer
-                    .with_key_authorization()
-                    .ok_or_else(|| KeyError::SigningOperation {
-                        operation: "key provisioning",
-                        reason: "stored key authorization could not be applied to signing mode"
-                            .to_string(),
-                    })?;
-            let retry_provider = mpp::client::TempoProvider::new(
-                provisioning_signer.signer.clone(),
-                resolved.rpc_url.as_str(),
-            )
-            .map_err(|source| ConfigError::ProviderInitSource {
-                provider: "tempo payment provider (provisioning retry)",
-                source: Box::new(source),
-            })?
-            .with_client_id(CLIENT_ID)
-            .with_signing_mode(provisioning_signer.signing_mode);
-            let original_resp_rejection = parse_payment_rejection(&resp);
-            let retry_credential = retry_provider
-                .pay(challenge)
-                .await
-                .map_err(|_| original_resp_rejection)?;
-            submit_credential(http, url, &retry_credential).await?
-        } else {
-            resp
-        };
+        }
+        let provisioning_signer =
+            signer
+                .with_key_authorization()
+                .ok_or_else(|| KeyError::SigningOperation {
+                    operation: "key provisioning",
+                    reason: "stored key authorization could not be applied to signing mode"
+                        .to_string(),
+                })?;
+        let retry_provider = mpp::client::TempoProvider::new(
+            provisioning_signer.signer.clone(),
+            resolved.rpc_url.as_str(),
+        )
+        .map_err(|source| ConfigError::ProviderInitSource {
+            provider: "tempo payment provider (provisioning retry)",
+            source: Box::new(source),
+        })?
+        .with_client_id(CLIENT_ID)
+        .with_signing_mode(provisioning_signer.signing_mode);
+        let original_resp_rejection = parse_payment_rejection(&resp);
+        let retry_credential = retry_provider
+            .pay(challenge)
+            .await
+            .map_err(|_| original_resp_rejection)?;
+        submit_credential(http, url, &retry_credential).await?
+    } else {
+        resp
+    };
 
     if resp.status_code >= 400 {
         return Err(parse_payment_rejection(&resp).into());
@@ -371,5 +380,23 @@ mod tests {
         let resp = HttpResponse::for_test(402, body);
         let err = parse_payment_rejection(&resp);
         assert!(matches!(err, PaymentError::PaymentRejected { .. }));
+    }
+
+    #[test]
+    fn test_payment_proof_invalid_wrapper_retries_key_authorization() {
+        let resp = HttpResponse::for_test(
+            400,
+            br#"{"error":"payment_proof_invalid","message":"invalid payment proof"}"#,
+        );
+        assert!(is_retriable_payment_rejection(&resp));
+    }
+
+    #[test]
+    fn test_unrelated_client_rejection_does_not_retry_key_authorization() {
+        let resp = HttpResponse::for_test(
+            400,
+            br#"{"error":"invalid_request","message":"missing input"}"#,
+        );
+        assert!(!is_retriable_payment_rejection(&resp));
     }
 }
