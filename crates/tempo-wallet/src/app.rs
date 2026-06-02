@@ -7,6 +7,8 @@ use crate::{
         spend_credits, transfer, whoami,
     },
 };
+use std::path::PathBuf;
+use tempo_common::cli::context::Context;
 use tempo_common::error::{ConfigError, TempoError};
 
 /// Run the tempo-wallet application.
@@ -64,42 +66,20 @@ pub(crate) async fn run(mut cli: Cli) -> Result<(), TempoError> {
                     address,
                     ..
                 } => {
-                    if let Some(challenge) = mpp_challenge {
-                        if amount_cents.is_some() || credits_to.is_some() || data != "0x" || value != "0" {
-                            Err(ConfigError::Invalid(
-                                "--mpp-challenge cannot be combined with --amount-cents, --to, --data, or --value".to_string(),
-                            )
-                            .into())
-                        } else {
-                            spend_credits::run_mpp(&ctx, challenge, mpp_client_id, address).await
-                        }
-                    } else if let Some(challenge_path) = mpp_challenge_file {
-                        if amount_cents.is_some() || credits_to.is_some() || data != "0x" || value != "0" {
-                            Err(ConfigError::Invalid(
-                                "--mpp-challenge-file cannot be combined with --amount-cents, --to, --data, or --value".to_string(),
-                            )
-                            .into())
-                        } else {
-                            spend_credits::run_mpp_file(
-                                &ctx,
-                                &challenge_path,
-                                mpp_client_id,
-                                address,
-                            )
-                            .await
-                        }
-                    } else {
-                        match (amount_cents, credits_to) {
-                            (Some(amount_cents), Some(to)) => {
-                                spend_credits::run(&ctx, amount_cents, to, data, value, address)
-                                    .await
-                            }
-                            _ => Err(ConfigError::Missing(
-                                "--amount-cents and --to are required when using --credits, unless --mpp-challenge is provided".to_string(),
-                            )
-                            .into()),
-                        }
-                    }
+                    run_credits_transfer(
+                        &ctx,
+                        CreditsTransferArgs {
+                            amount_cents,
+                            to: credits_to,
+                            data,
+                            value,
+                            mpp_challenge,
+                            mpp_challenge_file,
+                            mpp_client_id,
+                            address,
+                        },
+                    )
+                    .await
                 }
                 Commands::Transfer {
                     amount,
@@ -123,6 +103,63 @@ pub(crate) async fn run(mut cli: Cli) -> Result<(), TempoError> {
         },
     )
     .await
+}
+
+struct CreditsTransferArgs {
+    amount_cents: Option<u64>,
+    to: Option<String>,
+    data: String,
+    value: String,
+    mpp_challenge: Option<String>,
+    mpp_challenge_file: Option<PathBuf>,
+    mpp_client_id: Option<String>,
+    address: Option<String>,
+}
+
+async fn run_credits_transfer(ctx: &Context, args: CreditsTransferArgs) -> Result<(), TempoError> {
+    let has_raw_transaction_args =
+        args.amount_cents.is_some() || args.to.is_some() || args.data != "0x" || args.value != "0";
+
+    match (args.mpp_challenge, args.mpp_challenge_file) {
+        (Some(challenge), None) => {
+            reject_raw_transaction_args("--mpp-challenge", has_raw_transaction_args)?;
+            spend_credits::run_mpp(ctx, challenge, args.mpp_client_id, args.address).await
+        }
+        (None, Some(challenge_path)) => {
+            reject_raw_transaction_args("--mpp-challenge-file", has_raw_transaction_args)?;
+            spend_credits::run_mpp_file(
+                ctx,
+                &challenge_path,
+                args.mpp_client_id,
+                args.address,
+            )
+            .await
+        }
+        (None, None) => match (args.amount_cents, args.to) {
+            (Some(amount_cents), Some(to)) => {
+                spend_credits::run(ctx, amount_cents, to, args.data, args.value, args.address).await
+            }
+            _ => Err(ConfigError::Missing(
+                "--amount-cents and --to are required when using --credits, unless --mpp-challenge is provided".to_string(),
+            )
+            .into()),
+        },
+        (Some(_), Some(_)) => unreachable!("clap prevents multiple MPP challenge sources"),
+    }
+}
+
+fn reject_raw_transaction_args(
+    flag: &str,
+    has_raw_transaction_args: bool,
+) -> Result<(), TempoError> {
+    if has_raw_transaction_args {
+        return Err(ConfigError::Invalid(format!(
+            "{flag} cannot be combined with --amount-cents, --to, --data, or --value"
+        ))
+        .into());
+    }
+
+    Ok(())
 }
 
 /// Derive a short analytics-friendly name from a parsed command.
