@@ -109,6 +109,19 @@ fn should_halve_range(err: &str, chunk_start: u64, chunk_end: u64) -> bool {
     is_rpc_range_error(err) && (chunk_end - chunk_start) > 1000
 }
 
+fn split_log_query_range(chunk_start: u64, chunk_end: u64) -> Option<((u64, u64), (u64, u64))> {
+    if chunk_end <= chunk_start {
+        return None;
+    }
+
+    let lower_end = chunk_start + ((chunk_end - chunk_start) / 2);
+    if lower_end >= chunk_end {
+        return None;
+    }
+
+    Some(((chunk_start, lower_end), (lower_end + 1, chunk_end)))
+}
+
 async fn append_discovered_channels_from_logs(
     logs: &[alloy::rpc::types::Log],
     provider: &alloy::providers::RootProvider<alloy::network::Ethereum>,
@@ -264,41 +277,80 @@ pub async fn find_all_channels_for_payer(
         "scanning blocks for ChannelOpened events"
     );
 
+    let mut pending_ranges = Vec::new();
     let mut chunk_end = latest;
-    while chunk_end > earliest {
-        let chunk_start = chunk_end
-            .saturating_sub(LOG_QUERY_BLOCK_RANGE)
-            .max(earliest);
+    while chunk_end > earliest || !pending_ranges.is_empty() {
+        let ((chunk_start, query_end), from_pending_range) = match pending_ranges.pop() {
+            Some(range) => (range, true),
+            None => (
+                (
+                    chunk_end
+                        .saturating_sub(LOG_QUERY_BLOCK_RANGE)
+                        .max(earliest),
+                    chunk_end,
+                ),
+                false,
+            ),
+        };
 
         let filter = Filter::new()
             .address(escrow)
             .event_signature(event_topic)
             .topic2(payer_topic)
             .from_block(BlockNumberOrTag::Number(chunk_start))
-            .to_block(BlockNumberOrTag::Number(chunk_end));
+            .to_block(BlockNumberOrTag::Number(query_end));
 
         let logs = match provider.get_logs(&filter).await {
             Ok(logs) => logs,
             Err(e) => {
                 let err_str = e.to_string();
-                if should_halve_range(&err_str, chunk_start, chunk_end) {
-                    let halved = (chunk_end - chunk_start) / 2;
+                if should_halve_range(&err_str, chunk_start, query_end) {
+                    let Some((lower, upper)) = split_log_query_range(chunk_start, query_end) else {
+                        tracing::warn!(
+                            network = network.as_str(),
+                            chunk_start,
+                            chunk_end = query_end,
+                            %e,
+                            "failed to split oversized log query range"
+                        );
+                        if !from_pending_range {
+                            if chunk_start == earliest {
+                                break;
+                            }
+                            chunk_end = chunk_start.saturating_sub(1);
+                        }
+                        continue;
+                    };
                     tracing::debug!(
                         network = network.as_str(),
-                        old_range = chunk_end - chunk_start,
-                        new_range = halved,
+                        old_range = query_end - chunk_start,
+                        lower_start = lower.0,
+                        lower_end = lower.1,
+                        upper_start = upper.0,
+                        upper_end = upper.1,
                         "RPC range too large, halving"
                     );
-                    chunk_end = chunk_start + halved;
+                    pending_ranges.push(upper);
+                    pending_ranges.push(lower);
+                    if !from_pending_range {
+                        if chunk_start == earliest {
+                            chunk_end = earliest;
+                        } else {
+                            chunk_end = chunk_start.saturating_sub(1);
+                        }
+                    }
                     continue;
                 }
                 tracing::warn!(
                     network = network.as_str(),
                     chunk_start,
-                    chunk_end,
+                    chunk_end = query_end,
                     %e,
                     "failed to query logs, skipping block range"
                 );
+                if from_pending_range {
+                    continue;
+                }
                 if chunk_start == earliest {
                     break;
                 }
@@ -309,6 +361,9 @@ pub async fn find_all_channels_for_payer(
 
         append_discovered_channels_from_logs(&logs, &provider, network, escrow, &mut results).await;
 
+        if from_pending_range {
+            continue;
+        }
         if chunk_start == earliest {
             break;
         }
@@ -388,4 +443,31 @@ pub async fn query_token_balance(
                 source: Box::new(source),
             })?;
     Ok(balance)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn split_log_query_range_covers_both_halves_without_gap() {
+        let (lower, upper) = split_log_query_range(80, 100).expect("range should split");
+
+        assert_eq!(lower, (80, 90));
+        assert_eq!(upper, (91, 100));
+    }
+
+    #[test]
+    fn split_log_query_range_preserves_single_block_boundary() {
+        let (lower, upper) = split_log_query_range(0, 1).expect("two block range should split");
+
+        assert_eq!(lower, (0, 0));
+        assert_eq!(upper, (1, 1));
+    }
+
+    #[test]
+    fn split_log_query_range_rejects_empty_range() {
+        assert_eq!(split_log_query_range(42, 42), None);
+        assert_eq!(split_log_query_range(43, 42), None);
+    }
 }
