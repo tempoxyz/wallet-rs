@@ -272,9 +272,9 @@ new-crate.workspace = true
 | `TEMPO_SERVICES_URL` | Override service directory API URL |
 | `TEMPO_NO_TELEMETRY` | Disable telemetry |
 | `TEMPO_PRIVATE_KEY` | Provide a private key directly for payment (bypasses wallet login and keychain; ephemeral) |
-| `TEMPO_BRIDGE_API_KEY` / `BRIDGE_API_KEY` | Bridge API key for `tempo wallet cards customers ...` |
+| `TEMPO_BRIDGE_API_KEY` / `BRIDGE_API_KEY` | Bridge API key for `tempo cards customers ...` |
 | `TEMPO_BRIDGE_API_URL` | Override Bridge API base URL for card tests/integration |
-| `TEMPO_STRIPE_API_KEY` / `STRIPE_SECRET_KEY` / `STRIPE_API_KEY` | Stripe API key for `tempo wallet cards ...` Issuing commands |
+| `TEMPO_STRIPE_API_KEY` / `STRIPE_SECRET_KEY` / `STRIPE_API_KEY` | Stripe API key for `tempo cards ...` Issuing commands |
 | `TEMPO_STRIPE_API_URL` | Override Stripe API base URL for card tests/integration |
 
 ## Data Locations
@@ -291,7 +291,7 @@ All data lives under `$TEMPO_HOME` (default: `~/.tempo`):
 ```
 
 - Private keys: macOS Keychain (macOS) or inline in `keys.toml` (Linux)
-- Card provider keys: env vars take precedence; saved keys live in `cards.toml` via `tempo wallet cards config ...`
+- Card provider keys: env vars take precedence; saved keys live in `cards.toml` via `tempo cards config ...`
 
 ## Configuration Structure
 

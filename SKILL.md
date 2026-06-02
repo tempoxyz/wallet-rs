@@ -87,20 +87,20 @@ tempo request -t -X GET <SERVICE_URL>/<ENDPOINT_PATH>
 
 ## Wallet-Backed Cards
 
-Use `tempo wallet cards` for virtual cards backed by Tempo wallet balances. Keep the skill lean and treat CLI help as the source of truth for flags:
+Use `tempo cards` for virtual cards backed by Tempo wallet balances. Keep the skill lean and treat CLI help as the source of truth for flags:
 
 ```bash
-tempo wallet -t cards --help
-tempo wallet -t cards customers --help
-tempo wallet -t cards approve --help
+tempo cards -t --help
+tempo cards -t customers --help
+tempo cards -t approve --help
 ```
 
 Pointers:
 - Configure Bridge/Stripe keys with `cards config ...` or env vars; env vars win over `$TEMPO_HOME/wallet/cards.toml`. See `AGENTS.md` for the exact env names.
 - Bridge onboarding lives under `cards customers`: create/get/list/delete, hosted ToS, KYC, and customer transfers.
-- Stripe Issuing lives at top-level `cards create|list|get|update|freeze|unfreeze|cancel`, plus `cardholders`, `transactions`, `authorizations`, and `statements`.
+- Stripe Issuing lives at top-level `cards create|list|get|update|freeze|unfreeze|cancel`, plus `cardholders`, `transactions`, and `authorizations`.
 - On-chain issuer permission lives in `cards approve` and `cards allowance`; run `approve --dry-run` before submitting.
-- For repo work, inspect `crates/tempo-wallet/src/commands/cards/`, `crates/tempo-wallet/src/args.rs`, and `crates/tempo-wallet/tests/cards.rs`.
+- For repo work, inspect `crates/tempo-cards/src/commands/cards/`, `crates/tempo-cards/src/args.rs`, and `crates/tempo-cards/tests/cards.rs`.
 
 ### Rules
 
