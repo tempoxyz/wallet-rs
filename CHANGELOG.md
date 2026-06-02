@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.3 (2026-06-02)
+
+### Patch Changes
+
+- Add the standalone `tempo-cards` extension for wallet-backed card configuration, customer management, approvals, and provider-backed card workflows. (by @letstokenize, [#480](https://github.com/tempoxyz/wallet/pull/480))
+- Preserve both halves of an oversized session channel log scan when an RPC requires a smaller `eth_getLogs` range, avoiding skipped upper-half ranges during wallet session recovery. (by @EfeBaranDurmaz, [#462](https://github.com/tempoxyz/wallet/pull/462))
+- Pass the selected login network through wallet authentication requests so testnet CLI logins stay on testnet instead of falling back to mainnet browser state. (by @BrendanRyan, [#456](https://github.com/tempoxyz/wallet/pull/456))
+- Fixed `tempo request` failing on 402 responses that offer multiple `tempo`-method payment challenges (e.g. moderato + mainnet on the same endpoint). The CLI now decodes every offered challenge and picks the first one the wallet can actually satisfy — matching `--network` (when set) and the keystore's `(chain_id, currency)`. When no challenge matches, a new `NoCompatibleChallenge` error lists the offered and held options and suggests `tempo wallet fund` / `tempo wallet login` instead of failing later with a cryptic "No key configured" message. (by @BrendanRyan, [#477](https://github.com/tempoxyz/wallet/pull/477))
+- Redact query parameters from paid-success analytics events so payment flows do not report URL secrets after a 402 challenge succeeds. (by @DimitryFiuse, [#458](https://github.com/tempoxyz/wallet/pull/458))
+
 ## 0.4.2 (2026-05-04)
 
 ### Patch Changes
