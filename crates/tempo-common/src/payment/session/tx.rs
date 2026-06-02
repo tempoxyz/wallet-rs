@@ -123,7 +123,7 @@ pub async fn resolve_and_sign_tx_with_fee_payer(
     .with_fee_token(fee_token)
     .with_nonce_key(EXPIRING_NONCE_KEY);
 
-    if let Some(valid_before) = valid_before {
+    if let Some(valid_before) = valid_before.and_then(std::num::NonZeroU64::new) {
         gas_request = gas_request.with_valid_before(valid_before);
     }
 
@@ -156,7 +156,7 @@ pub async fn resolve_and_sign_tx_with_fee_payer(
             .with_fee_token(fee_token)
             .with_nonce_key(EXPIRING_NONCE_KEY);
 
-            if let Some(valid_before) = valid_before {
+            if let Some(valid_before) = valid_before.and_then(std::num::NonZeroU64::new) {
                 gas_request = gas_request.with_valid_before(valid_before);
             }
 
