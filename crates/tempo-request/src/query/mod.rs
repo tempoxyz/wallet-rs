@@ -209,7 +209,13 @@ pub(crate) async fn run(ctx: &Context, query: QueryArgs) -> Result<(), TempoErro
             status_code,
             response,
         }) => {
-            pay_analytics.track_success(tx_hash, channel_id, &target_url, &method_str, status_code);
+            pay_analytics.track_success(
+                tx_hash,
+                channel_id,
+                &sanitized_url,
+                &method_str,
+                status_code,
+            );
             if let Some(resp) = response {
                 // Display receipt summary for charge responses
                 if !is_session {
