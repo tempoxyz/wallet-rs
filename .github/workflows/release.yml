@@ -18,13 +18,27 @@ jobs:
     runs-on: ubuntu-latest
     environment: release
     permissions: {}
+    env:
+      RELEASE_BOT_APP_ID: ${{ vars.RELEASE_BOT_APP_ID || secrets.RELEASE_BOT_APP_ID }}
+      RELEASE_BOT_PRIVATE_KEY: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
     steps:
+      - name: Check release bot credentials
+        id: release-bot
+        run: |
+          if [ -z "${RELEASE_BOT_APP_ID}" ] || [ -z "${RELEASE_BOT_PRIVATE_KEY}" ]; then
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Release bot credentials are not configured; skipping release PR automation."
+          else
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Mint scoped app token
+        if: steps.release-bot.outputs.configured == 'true'
         id: app-token
         uses: actions/create-github-app-token@1b10c78c7865c340bc4f6099eb2f838309f1e8c3 # v3.1.1
         with:
-          app-id: ${{ secrets.RELEASE_BOT_APP_ID }}
-          private-key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
+          client-id: ${{ env.RELEASE_BOT_APP_ID }}
+          private-key: ${{ env.RELEASE_BOT_PRIVATE_KEY }}
           owner: tempoxyz
           repositories: wallet
           permission-contents: write
@@ -32,12 +46,14 @@ jobs:
           permission-metadata: read
 
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        if: steps.release-bot.outputs.configured == 'true'
         with:
           fetch-depth: 0
           token: ${{ steps.app-token.outputs.token }}
           persist-credentials: false
 
       - uses: tempoxyz/changelogs@54f693643e1bd8469293bdfcbfb647bceb559490 # changelogs@0.6.3 + unified PR title + install from source
+        if: steps.release-bot.outputs.configured == 'true'
         id: changelogs
         with:
           conventional-commit: true
