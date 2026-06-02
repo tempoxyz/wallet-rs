@@ -123,6 +123,43 @@ impl Keystore {
         self.has_wallet() && self.keys.iter().any(|k| k.chain_id == network.chain_id())
     }
 
+    /// Check if a wallet is connected with a key for the given network AND currency.
+    ///
+    /// Used to filter multi-challenge 402 responses down to challenges the wallet
+    /// can actually satisfy. Returns `true` when:
+    ///
+    /// - the keystore is empty (nothing to filter on; preserves prior behavior for
+    ///   unauthenticated flows like `--dry-run` without `tempo wallet login`), or
+    /// - the keystore is ephemeral (a raw `--private-key` can sign anything), or
+    /// - any key in the store covers the requested `network` (matching
+    ///   `chain_id`, or a direct-EOA key that can sign on any network), AND
+    /// - that key's `limits` either include `currency` (address compare) or
+    ///   are empty (unlimited key).
+    ///
+    /// `currency` is the on-wire token address from the challenge (`0x…`). If it
+    /// doesn't parse as an `Address`, currency-level filtering is skipped and
+    /// network-only matching is used.
+    ///
+    /// The network match mirrors [`Self::key_for_network`] so this predicate
+    /// agrees with later signer resolution.
+    #[must_use]
+    pub fn has_key_for_network_and_currency(&self, network: NetworkId, currency: &str) -> bool {
+        if self.is_empty() || self.ephemeral {
+            return true;
+        }
+        if !self.has_wallet() {
+            return false;
+        }
+        let currency_addr = currency.parse::<Address>().ok();
+        self.keys.iter().any(|k| {
+            let network_matches = k.chain_id == network.chain_id() || k.is_direct_eoa_key();
+            let currency_matches = currency_addr.is_none_or(|addr| {
+                k.limits.is_empty() || k.limits.iter().any(|l| l.currency == addr)
+            });
+            network_matches && currency_matches
+        })
+    }
+
     /// Ensure a wallet with a key for the given network is available.
     ///
     /// Returns an error with a helpful message if no wallet or key is configured.

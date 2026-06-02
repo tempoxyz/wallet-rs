@@ -89,10 +89,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
           target: ${{ matrix.build.target }}
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
-        with:
-          key: ${{ matrix.build.target }}
-          save-if: false
       - name: Build release binary
         run: cargo build --locked --release --target ${{ matrix.build.target }} -p ${{ env.PACKAGE }}
       - run: strip target/${{ matrix.build.target }}/release/${{ env.PACKAGE }}
@@ -131,7 +127,7 @@ jobs:
           subject-path: ${{ env.PACKAGE }}-${{ matrix.build.suffix }}
 
       - name: Install cosign
-        uses: sigstore/cosign-installer@cad07c2e89fa2edd6e2d7bab4c1aa38e53f76003 # v4.1.1
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
 
       - name: Sign binary with cosign (keyless)
         shell: bash
@@ -154,6 +150,7 @@ jobs:
 
   publish:
     name: Publish ${{ matrix.package }}
+    environment: release
     permissions:
       contents: write
     needs: [parse-tag, build]

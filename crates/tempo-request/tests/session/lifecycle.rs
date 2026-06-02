@@ -213,6 +213,11 @@ async fn opens_channel_persists_state_and_reuses_authorized_session() {
         vec![SESSION_AMOUNT * 2],
         "reused request should advance cumulative amount"
     );
+    assert_eq!(
+        rpc.snapshot().eth_call_count,
+        0,
+        "session voucher reuse should not validate the channel on-chain"
+    );
 
     let channels_after_second = load_channels(&temp);
     assert_eq!(

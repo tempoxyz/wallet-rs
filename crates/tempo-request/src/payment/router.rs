@@ -5,12 +5,7 @@
 use mpp::PaymentChallenge;
 
 use crate::http::HttpClient;
-use tempo_common::{
-    config::Config,
-    error::{PaymentError, TempoError},
-    keys::Keystore,
-    network::NetworkId,
-};
+use tempo_common::{config::Config, error::TempoError, keys::Keystore, network::NetworkId};
 
 use super::{
     charge::handle_charge_request,
@@ -23,6 +18,10 @@ use super::{
 /// `network` is the already-resolved network from the 402 challenge.
 /// The caller is responsible for parsing the challenge and extracting
 /// the network before calling this function (see `query/challenge.rs`).
+///
+/// The `--network` filter (when set on `http`) is enforced upstream during
+/// challenge selection in `parse_payment_challenge`, so any `network` reaching
+/// this function is guaranteed to match `http.network` if it is `Some`.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn dispatch_payment(
     config: &Config,
@@ -33,17 +32,10 @@ pub(crate) async fn dispatch_payment(
     network: NetworkId,
     keys: &Keystore,
 ) -> Result<PaymentResult, TempoError> {
-    if let Some(allowed) = http.network {
-        if allowed != network {
-            return Err(PaymentError::ChallengeSchema {
-                context: "payment challenge network",
-                reason: format!(
-                    "Server requested network '{network}' but --network is '{allowed}'"
-                ),
-            }
-            .into());
-        }
-    }
+    debug_assert!(
+        http.network.is_none_or(|allowed| allowed == network),
+        "challenge selection should have filtered to --network already"
+    );
 
     let rpc_url = config.rpc_url(network);
     let resolved = ResolvedChallenge {

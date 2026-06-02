@@ -214,8 +214,14 @@ async fn confirm_server_invalidation_on_chain(
     escrow_contract: Address,
     channel_id: B256,
 ) -> Result<bool, TempoError> {
-    let on_chain = session::get_channel_on_chain(provider, escrow_contract, channel_id).await?;
-    Ok(invalidation_confirmed_on_chain(on_chain.as_ref()))
+    for _ in 0..2 {
+        let on_chain = session::get_channel_on_chain(provider, escrow_contract, channel_id).await?;
+        if invalidation_confirmed_on_chain(on_chain.as_ref()) {
+            return Ok(true);
+        }
+    }
+
+    Ok(false)
 }
 
 fn unconfirmed_invalidation_error(channel_id: B256) -> TempoError {
@@ -1011,6 +1017,66 @@ async fn challenge_stage(
     )))
 }
 
+async fn reuse_persisted_channel_without_on_chain_check(
+    http: &crate::http::HttpClient,
+    url: &str,
+    resolved: &ResolvedChallenge,
+    signer: &Signer,
+    challenge: &ResolvedSessionChallenge,
+    record: session::ChannelRecord,
+    max_spend: Option<u128>,
+) -> Result<Option<PaymentResult>, TempoError> {
+    if !is_session_reusable(
+        &challenge.origin,
+        &record,
+        &challenge.payer_hex,
+        challenge.escrow_contract,
+        &challenge.token_hex,
+        &challenge.payee_hex,
+        challenge.chain_id,
+        challenge.key_address,
+    ) {
+        return Ok(None);
+    }
+
+    if let Some(max_spend) = max_spend {
+        if challenge.amount > max_spend {
+            return Err(PaymentError::PaymentRejected {
+                reason: format!(
+                    "Payment max spend exceeded: max={} required={}",
+                    format_token_amount(max_spend, challenge.network_id),
+                    format_token_amount(challenge.amount, challenge.network_id),
+                ),
+                status_code: 402,
+            }
+            .into());
+        }
+    }
+
+    let top_up_deposit = challenge
+        .suggested_deposit
+        .unwrap_or(record.deposit)
+        .max(challenge.amount);
+    let deposit = DepositStageOutput {
+        provider: alloy::providers::RootProvider::new_http(resolved.rpc_url.clone()),
+        deposit: top_up_deposit,
+        clamped_deposit: None,
+    };
+    let reusable = ChannelReuseCandidate {
+        on_chain_deposit: record.deposit,
+        record,
+    };
+
+    match reuse_stage_execute(
+        http, url, resolved, signer, challenge, &deposit, reusable, max_spend,
+    )
+    .await?
+    {
+        ReuseStageOutcome::Reused(result) => Ok(Some(result.payment)),
+        ReuseStageOutcome::NeedsOpen => Ok(None),
+    }
+}
+
 async fn deposit_stage(
     resolved: &ResolvedChallenge,
     challenge: &ResolvedSessionChallenge,
@@ -1519,13 +1585,32 @@ pub(crate) async fn handle_session_request(
         }
     }
 
-    let deposit = deposit_stage(&resolved, &challenge, max_spend).await?;
-
     // Hold a blocking per-origin lock for the full paid request lifecycle.
     // A channel permits only one active session at a time, so requests to
     // the same origin are intentionally serialized until completion.
     let _lock_guard = acquire_origin_lock(&challenge.session_key)
         .map_err(|e| session_store_error("acquire session lock", e))?;
+
+    if let Some(record) = session::find_reusable_channel(
+        &challenge.origin,
+        &challenge.payer_hex,
+        challenge.escrow_contract,
+        &challenge.token_hex,
+        &challenge.payee_hex,
+        challenge.chain_id,
+    )
+    .map_err(|err| session_store_error("load session", err))?
+    {
+        if let Some(result) = reuse_persisted_channel_without_on_chain_check(
+            http, url, &resolved, &signer, &challenge, record, max_spend,
+        )
+        .await?
+        {
+            return Ok(result);
+        }
+    }
+
+    let deposit = deposit_stage(&resolved, &challenge, max_spend).await?;
 
     if let Some(reusable) = reuse_stage_discover(url, &challenge, &deposit).await? {
         match reuse_stage_execute(
