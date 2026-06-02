@@ -2,7 +2,7 @@
 
 ## Repository Overview
 
-This is a Cargo workspace containing 4 crates under `crates/`, providing a command-line HTTP client with built-in [MPP](https://mpp.dev) payment support, wallet identity management, and a release signing tool. The top-level `tempo` launcher lives in the main tempo repo (`tempo/crates/ext/`).
+This is a Cargo workspace containing 5 crates under `crates/`, providing a command-line HTTP client with built-in [MPP](https://mpp.dev) payment support, wallet identity management, wallet-backed cards, and a release signing tool. The top-level `tempo` launcher lives in the main tempo repo (`tempo/crates/ext/`).
 
 **Supported Payment Protocols:**
 - [Machine Payments Protocol (MPP)](https://mpp.dev) - Open protocol for HTTP-native machine-to-machine payments
@@ -13,7 +13,7 @@ The root `Cargo.toml` is workspace-only (no package). All dependencies are decla
 
 #### `crates/tempo-common/` — package `tempo-common` (library)
 
-Shared library used by `tempo-wallet` and `tempo-request`. Contains core logic:
+Shared library used by `tempo-wallet`, `tempo-request`, and `tempo-cards`. Contains core logic:
 - `crates/tempo-common/src/lib.rs` - Module declarations (analytics, cli, config, error, keys, network, payment, security)
 - `crates/tempo-common/src/analytics.rs` - Opt-out telemetry (PostHog)
 - `crates/tempo-common/src/config.rs` - Configuration file handling
@@ -61,6 +61,15 @@ Wallet identity and custody extension, plus session/service management. Source o
   - `completions.rs` - Shell completions
 - `crates/tempo-wallet/tests/` - Integration tests (black-box CLI testing via assert_cmd)
 
+#### `crates/tempo-cards/` — package `tempo-cards`, binary `tempo-cards`
+
+Wallet-backed card extension invoked as `tempo cards ...` via the launcher's `tempo-<name>` discovery. Covers Bridge customers/KYC/ToS, Stripe Issuing cards/cardholders/transactions/authorizations, and the on-chain USDC approval/allowance for the cards issuer.
+- `crates/tempo-cards/src/main.rs` - CLI entry point
+- `crates/tempo-cards/src/args.rs` - clap definitions (Cli + CardsCommands and subcommand enums)
+- `crates/tempo-cards/src/app.rs` - Command dispatch and analytics tagging
+- `crates/tempo-cards/src/commands/cards/` - Implementation (mod.rs, client.rs, config.rs, approval.rs)
+- `crates/tempo-cards/tests/` - Integration tests (mocked Bridge + Stripe via axum)
+
 #### `crates/tempo-request/` — package `tempo-request`, binary `tempo-request`
 
 HTTP client with built-in MPP payment support. Source organized by module directories:
@@ -81,7 +90,7 @@ HTTP client with built-in MPP payment support. Source organized by module direct
 Lightweight release manifest signing tool for authenticating build artifacts.
 - `crates/tempo-sign/src/main.rs` - Signing tool source
 
-**Packages:** `tempo-common`, `tempo-wallet`, `tempo-request`, `tempo-sign`
+**Packages:** `tempo-common`, `tempo-wallet`, `tempo-request`, `tempo-cards`, `tempo-sign`
 
 ## Commands
 
@@ -263,6 +272,10 @@ new-crate.workspace = true
 | `TEMPO_SERVICES_URL` | Override service directory API URL |
 | `TEMPO_NO_TELEMETRY` | Disable telemetry |
 | `TEMPO_PRIVATE_KEY` | Provide a private key directly for payment (bypasses wallet login and keychain; ephemeral) |
+| `TEMPO_BRIDGE_API_KEY` / `BRIDGE_API_KEY` | Bridge API key for `tempo cards customers ...` |
+| `TEMPO_BRIDGE_API_URL` | Override Bridge API base URL for card tests/integration |
+| `TEMPO_STRIPE_API_KEY` / `STRIPE_SECRET_KEY` / `STRIPE_API_KEY` | Stripe API key for `tempo cards ...` Issuing commands |
+| `TEMPO_STRIPE_API_URL` | Override Stripe API base URL for card tests/integration |
 
 ## Data Locations
 
@@ -273,10 +286,12 @@ All data lives under `$TEMPO_HOME` (default: `~/.tempo`):
 ├── config.toml              # Shared config (RPC overrides, telemetry)
 └── wallet/
     ├── keys.toml             # Wallet keys (mode 0600)
+    ├── cards.toml            # Bridge and Stripe API keys for wallet-backed cards (mode 0600)
     └── channels.db           # Persisted payment channel state (SQLite)
 ```
 
 - Private keys: macOS Keychain (macOS) or inline in `keys.toml` (Linux)
+- Card provider keys: env vars take precedence; saved keys live in `cards.toml` via `tempo cards config ...`
 
 ## Configuration Structure
 

@@ -14,14 +14,16 @@ install: release
 	mkdir -p $(HOME)/.tempo/bin
 	cp target/release/tempo-wallet $(HOME)/.tempo/bin/tempo-wallet
 	cp target/release/tempo-request $(HOME)/.tempo/bin/tempo-request
-	chmod +x $(HOME)/.tempo/bin/tempo-wallet $(HOME)/.tempo/bin/tempo-request
+	cp target/release/tempo-cards $(HOME)/.tempo/bin/tempo-cards
+	chmod +x $(HOME)/.tempo/bin/tempo-wallet $(HOME)/.tempo/bin/tempo-request $(HOME)/.tempo/bin/tempo-cards
 	@echo ""
 	@echo "Installed:"
 	@$(HOME)/.tempo/bin/tempo-wallet --version
 	@$(HOME)/.tempo/bin/tempo-request --version
+	@$(HOME)/.tempo/bin/tempo-cards --version
 
 uninstall:
-	rm -f $(HOME)/.tempo/bin/tempo-wallet $(HOME)/.tempo/bin/tempo-request
+	rm -f $(HOME)/.tempo/bin/tempo-wallet $(HOME)/.tempo/bin/tempo-request $(HOME)/.tempo/bin/tempo-cards
 
 clean:
 	cargo clean
