@@ -312,6 +312,10 @@ pub enum PaymentError {
         configured_network: String,
     },
     #[error(
+        "No payment challenge matches the configured wallet.\n  Offered by server: {offered}\n  Wallet has keys for: {held}\n  Fund the required currency with 'tempo wallet fund', or run 'tempo wallet login' to authorize a new key."
+    )]
+    NoCompatibleChallenge { offered: String, held: String },
+    #[error(
         "Malformed {context}: untrusted escrow contract: {provided} (expected {expected} for network {network})"
     )]
     ChallengeUntrustedEscrow {

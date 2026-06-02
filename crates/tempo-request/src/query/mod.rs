@@ -156,7 +156,8 @@ pub(crate) async fn run(ctx: &Context, query: QueryArgs) -> Result<(), TempoErro
         .unwrap_or(&target_url)
         .to_string();
 
-    let challenge = challenge::parse_payment_challenge(&response)?;
+    let challenge =
+        challenge::parse_payment_challenge(&response, &ctx.keys, prepared.http.network)?;
 
     if prepared.http.log_enabled() {
         eprintln!(

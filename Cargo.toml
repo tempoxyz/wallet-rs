@@ -50,7 +50,7 @@ tempfile = "3.27"
 tempo-primitives = { git = "https://github.com/tempoxyz/tempo.git", rev = "7d809cf350e35c92b420a18672222b710f86f77a", features = ["serde"] }
 thiserror = "2.0"
 time = "0.3"
-tokio = { version = "1.51", features = ["macros", "rt-multi-thread", "signal"] }
+tokio = { version = "1.52", features = ["macros", "rt-multi-thread", "signal"] }
 toon-format = "0.4"
 toml = "1.1"
 tracing = "0.1"
