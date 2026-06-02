@@ -283,6 +283,24 @@ impl Keystore {
             &mut self.keys[last]
         }
     }
+
+    /// Mark an access key as provisioned after an on-chain check confirms it.
+    ///
+    /// Returns `true` when a matching entry was found and changed.
+    pub fn mark_provisioned_address(&mut self, wallet_address: Address, chain_id: u64) -> bool {
+        let Some(entry) = self
+            .keys
+            .iter_mut()
+            .find(|k| k.wallet_address_matches(wallet_address) && k.chain_id == chain_id)
+        else {
+            return false;
+        };
+        if entry.provisioned {
+            return false;
+        }
+        entry.provisioned = true;
+        true
+    }
 }
 
 #[cfg(test)]
@@ -585,6 +603,34 @@ key_address = "0xsigner2"
         assert_eq!(keys.keys.len(), 2);
         assert_eq!(keys.keys[0].chain_id, 4217);
         assert_eq!(keys.keys[1].chain_id, 42431);
+    }
+
+    #[test]
+    fn test_mark_provisioned_address_only_updates_matching_chain() {
+        let mut keys = Keystore::default();
+        let wallet: Address = "0x1111111111111111111111111111111111111111"
+            .parse()
+            .unwrap();
+        keys.upsert_by_wallet_address_and_chain(wallet, 4217);
+        keys.upsert_by_wallet_address_and_chain(wallet, 42431);
+
+        assert!(keys.mark_provisioned_address(wallet, 4217));
+        assert!(!keys.mark_provisioned_address(wallet, 4217));
+        assert!(
+            keys.keys
+                .iter()
+                .find(|entry| entry.chain_id == 4217)
+                .unwrap()
+                .provisioned
+        );
+        assert!(
+            !keys
+                .keys
+                .iter()
+                .find(|entry| entry.chain_id == 42431)
+                .unwrap()
+                .provisioned
+        );
     }
 
     #[test]
