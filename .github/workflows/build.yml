@@ -6,6 +6,7 @@ on:
       - "v*"
       - "tempo-wallet@*"
       - "tempo-request@*"
+      - "tempo-cards@*"
 
 env:
   CARGO_TERM_COLOR: always
@@ -29,14 +30,14 @@ jobs:
 
           if [[ "$TAG" == v* ]]; then
             VERSION="${TAG#v}"
-            PACKAGES='["tempo-wallet","tempo-request"]'
+            PACKAGES='["tempo-wallet","tempo-request","tempo-cards"]'
             RELEASE_TAG="$TAG"
           elif [[ "$TAG" == *"@"* ]]; then
             PACKAGE="${TAG%%@*}"
             VERSION="${TAG#*@}"
             RELEASE_TAG="$TAG"
 
-            if [[ "$PACKAGE" == "tempo-wallet" || "$PACKAGE" == "tempo-request" ]]; then
+            if [[ "$PACKAGE" == "tempo-wallet" || "$PACKAGE" == "tempo-request" || "$PACKAGE" == "tempo-cards" ]]; then
               PACKAGES="[\"${PACKAGE}\"]"
             else
               echo "Unsupported package in tag: ${PACKAGE}" >&2
@@ -210,6 +211,7 @@ jobs:
           declare -A PKG_DESC=(
             [tempo-wallet]="Manage your Tempo Wallet"
             [tempo-request]="Make an HTTP request"
+            [tempo-cards]="Issue and manage Tempo wallet-backed cards"
           )
 
           SIGN_ARGS=(

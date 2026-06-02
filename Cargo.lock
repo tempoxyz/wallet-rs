@@ -6162,6 +6162,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "tempo-cards"
+version = "0.4.2"
+dependencies = [
+ "alloy",
+ "assert_cmd",
+ "axum",
+ "base64",
+ "clap",
+ "getrandom 0.4.2",
+ "hex",
+ "mpp",
+ "reqwest 0.12.28",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "serial_test",
+ "tempfile",
+ "tempo-common",
+ "tempo-primitives",
+ "tempo-test",
+ "tokio",
+ "toml",
+ "tracing",
+ "url",
+ "urlencoding",
+]
+
+[[package]]
 name = "tempo-chainspec"
 version = "1.5.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
