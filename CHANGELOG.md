@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.4 (2026-06-03)
+
+### Patch Changes
+
+- Fix v0.4.3 wallet regressions by sending auth `chainId` in the backend-compatible hex/camelCase shape and by preventing transient key spending-limit preflight failures from forcing an already-provisioned access key through registration again. (by @Kartik, [#485](https://github.com/tempoxyz/wallet/pull/485))
+- Pin the `mpp` SDK to tempoxyz/mpp-rs@8ba7631 while the 0.10.5 publish is pending.
+
 ## 0.4.3 (2026-06-02)
 
 ### Patch Changes
