@@ -214,7 +214,7 @@ fn handle_rpc_request(
 fn assert_remote_login_handoff(stderr: &str) {
     assert!(stderr.contains("Auth URL:"), "{stderr}");
     assert!(stderr.contains("network=testnet"), "{stderr}");
-    assert!(stderr.contains("chain_id=42431"), "{stderr}");
+    assert!(stderr.contains("chainId=0xa5bf"), "{stderr}");
     assert!(stderr.contains("Network: testnet"), "{stderr}");
     assert!(stderr.contains("Verification code:"), "{stderr}");
     assert!(stderr.contains("Open this link on your device"), "{stderr}");
@@ -234,13 +234,15 @@ fn assert_login_server_saw_testnet(login: &MockLoginServer) {
     let device_requests = login.device_requests.lock().unwrap();
     assert_eq!(device_requests.len(), 1);
     assert_eq!(device_requests[0]["network"], "testnet");
-    assert_eq!(device_requests[0]["chain_id"], 42431);
+    assert_eq!(device_requests[0]["chainId"], "0xa5bf");
+    assert!(device_requests[0].get("chain_id").is_none());
 
     let poll_requests = login.poll_requests.lock().unwrap();
     assert!(!poll_requests.is_empty());
     for req in poll_requests.iter() {
         assert_eq!(req["network"], "testnet");
-        assert_eq!(req["chain_id"], 42431);
+        assert_eq!(req["chainId"], "0xa5bf");
+        assert!(req.get("chain_id").is_none());
     }
 }
 
@@ -469,7 +471,7 @@ async fn login_default_flow_keeps_local_copy_and_does_not_print_remote_handoff_t
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("Auth URL:"), "{stderr}");
     assert!(stderr.contains("network=testnet"), "{stderr}");
-    assert!(stderr.contains("chain_id=42431"), "{stderr}");
+    assert!(stderr.contains("chainId=0xa5bf"), "{stderr}");
     assert!(stderr.contains("Network: testnet"), "{stderr}");
     assert!(stderr.contains("Verification code:"), "{stderr}");
     assert!(

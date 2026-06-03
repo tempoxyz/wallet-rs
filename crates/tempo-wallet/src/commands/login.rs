@@ -231,11 +231,7 @@ async fn do_login(ctx: &Context, no_browser: bool) -> Result<(), TempoError> {
 
     let mut auth_url = parsed_url;
     set_auth_query_param(&mut auth_url, "network", ctx.network.auth_network_slug());
-    set_auth_query_param(
-        &mut auth_url,
-        "chain_id",
-        &ctx.network.chain_id().to_string(),
-    );
+    set_auth_query_param(&mut auth_url, "chainId", &auth_chain_id(ctx.network));
     set_auth_query_param(&mut auth_url, "code", &code);
     let url_str = auth_url.to_string();
 
@@ -344,6 +340,10 @@ fn set_auth_query_param(url: &mut Url, key: &str, value: &str) {
         query.append_pair(&k, &v);
     }
     query.append_pair(key, value);
+}
+
+fn auth_chain_id(network: NetworkId) -> String {
+    format!("0x{:x}", network.chain_id())
 }
 
 fn should_track_callback_window(status: BrowserLaunchStatus) -> bool {
@@ -483,7 +483,7 @@ async fn create_device_code(
             "key_type": "secp256k1",
             "code_challenge": code_challenge,
             "network": network.auth_network_slug(),
-            "chain_id": network.chain_id(),
+            "chainId": auth_chain_id(network),
         }))
         .send()
         .await
@@ -528,7 +528,7 @@ async fn poll_device_code(
         .json(&serde_json::json!({
             "code_verifier": code_verifier,
             "network": network.auth_network_slug(),
-            "chain_id": network.chain_id(),
+            "chainId": auth_chain_id(network),
         }))
         .send()
         .await
@@ -652,12 +652,18 @@ mod tests {
             .expect("valid url");
 
         set_auth_query_param(&mut url, "network", "testnet");
-        set_auth_query_param(&mut url, "chain_id", "42431");
+        set_auth_query_param(&mut url, "chainId", "0xa5bf");
         set_auth_query_param(&mut url, "code", "ANMGE375");
 
         assert_eq!(
             url.as_str(),
-            "https://wallet.tempo.xyz/cli-auth?network=testnet&chain_id=42431&code=ANMGE375"
+            "https://wallet.tempo.xyz/cli-auth?network=testnet&chainId=0xa5bf&code=ANMGE375"
         );
+    }
+
+    #[test]
+    fn auth_chain_id_is_hex_encoded() {
+        assert_eq!(auth_chain_id(NetworkId::Tempo), "0x1079");
+        assert_eq!(auth_chain_id(NetworkId::TempoModerato), "0xa5bf");
     }
 }
