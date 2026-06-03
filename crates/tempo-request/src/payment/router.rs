@@ -2,6 +2,7 @@
 //!
 //! This module is crate-internal and intentionally decoupled from CLI types.
 
+use alloy::primitives::Address;
 use mpp::PaymentChallenge;
 
 use crate::http::HttpClient;
@@ -11,6 +12,9 @@ use tempo_common::{
     keys::{Keystore, Signer},
     network::NetworkId,
 };
+
+const KEY_NOT_FOUND_SELECTOR: &str = "0x5f3f479c";
+const KEY_ALREADY_EXISTS_SELECTOR: &str = "0xaa1ba2f8";
 
 use super::{
     charge::handle_charge_request,
@@ -95,35 +99,138 @@ async fn preflight_signer_key_state(
     .await
     {
         Ok(_) => {
-            let mut persisted = keys.clone();
-            if persisted.mark_provisioned_address(wallet_address, network.chain_id()) {
-                persisted.save()?;
-            }
+            mark_key_provisioned(keys, wallet_address, network)?;
             Ok(signer)
         }
-        Err(mpp::MppError::Tempo(mpp::client::TempoClientError::AccessKeyNotProvisioned)) => {
-            signer.with_key_authorization().ok_or_else(|| {
-                KeyError::SigningOperation {
-                    operation: "key provisioning preflight",
-                    reason: "stored key authorization could not be applied to signing mode"
-                        .to_string(),
-                }
-                .into()
-            })
+        Err(err) => match classify_key_preflight_error(&err) {
+            KeyPreflightErrorState::NotProvisioned => signer_with_key_authorization(&signer),
+            KeyPreflightErrorState::Provisioned => {
+                tracing::warn!(
+                    error = %err,
+                    "key provisioning preflight found a provisioned key but failed to query spending limits"
+                );
+                mark_key_provisioned(keys, wallet_address, network)?;
+                Ok(signer)
+            }
+            KeyPreflightErrorState::Unknown => {
+                tracing::warn!(
+                    error = %err,
+                    "key provisioning preflight failed; continuing with optimistic signing"
+                );
+                Ok(signer)
+            }
+        },
+    }
+}
+
+fn signer_with_key_authorization(signer: &Signer) -> Result<Signer, TempoError> {
+    signer.with_key_authorization().ok_or_else(|| {
+        KeyError::SigningOperation {
+            operation: "key provisioning preflight",
+            reason: "stored key authorization could not be applied to signing mode".to_string(),
         }
-        Err(err) => {
-            tracing::warn!(
-                error = %err,
-                "key provisioning preflight failed; attaching stored key authorization without marking provisioned"
-            );
-            signer.with_key_authorization().ok_or_else(|| {
-                KeyError::SigningOperation {
-                    operation: "key provisioning preflight",
-                    reason: "stored key authorization could not be applied to signing mode"
-                        .to_string(),
-                }
-                .into()
-            })
-        }
+        .into()
+    })
+}
+
+fn mark_key_provisioned(
+    keys: &Keystore,
+    wallet_address: Address,
+    network: NetworkId,
+) -> Result<(), TempoError> {
+    let mut persisted = keys.clone();
+    if persisted.mark_provisioned_address(wallet_address, network.chain_id()) {
+        persisted.save()?;
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum KeyPreflightErrorState {
+    NotProvisioned,
+    Provisioned,
+    Unknown,
+}
+
+fn classify_key_preflight_error(err: &mpp::MppError) -> KeyPreflightErrorState {
+    if matches!(
+        err,
+        mpp::MppError::Tempo(mpp::client::TempoClientError::AccessKeyNotProvisioned)
+    ) {
+        return KeyPreflightErrorState::NotProvisioned;
+    }
+
+    let message = err.to_string().to_lowercase();
+    if message.contains("not provisioned")
+        || message.contains("keynotfound")
+        || message.contains(KEY_NOT_FOUND_SELECTOR)
+    {
+        return KeyPreflightErrorState::NotProvisioned;
+    }
+
+    if message.contains("failed to query remaining limit")
+        || message.contains("keyalreadyexists")
+        || message.contains(KEY_ALREADY_EXISTS_SELECTOR)
+    {
+        return KeyPreflightErrorState::Provisioned;
+    }
+
+    KeyPreflightErrorState::Unknown
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn preflight_classifies_typed_not_provisioned() {
+        let err = mpp::MppError::Tempo(mpp::client::TempoClientError::AccessKeyNotProvisioned);
+        assert_eq!(
+            classify_key_preflight_error(&err),
+            KeyPreflightErrorState::NotProvisioned
+        );
+    }
+
+    #[test]
+    fn preflight_classifies_key_not_found_selector_as_not_provisioned() {
+        let err = mpp::MppError::Http(
+            "failed to query key info: execution reverted, data: \"0x5f3f479c\"".to_string(),
+        );
+        assert_eq!(
+            classify_key_preflight_error(&err),
+            KeyPreflightErrorState::NotProvisioned
+        );
+    }
+
+    #[test]
+    fn preflight_classifies_remaining_limit_revert_as_provisioned() {
+        let err = mpp::MppError::Http(
+            "failed to query remaining limit: execution reverted, data: \"0xaa4bc69a63b4290d\""
+                .to_string(),
+        );
+        assert_eq!(
+            classify_key_preflight_error(&err),
+            KeyPreflightErrorState::Provisioned
+        );
+    }
+
+    #[test]
+    fn preflight_classifies_key_already_exists_retry_as_provisioned() {
+        let err = mpp::MppError::Http(
+            "gas estimation failed: KeyAlreadyExists(KeyAlreadyExists)".to_string(),
+        );
+        assert_eq!(
+            classify_key_preflight_error(&err),
+            KeyPreflightErrorState::Provisioned
+        );
+    }
+
+    #[test]
+    fn preflight_classifies_unknown_errors_as_unknown() {
+        let err = mpp::MppError::Http("failed to reach rpc node".to_string());
+        assert_eq!(
+            classify_key_preflight_error(&err),
+            KeyPreflightErrorState::Unknown
+        );
     }
 }
