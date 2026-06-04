@@ -503,7 +503,10 @@ fn transfer_help_shows_flags() {
 
     assert!(output.status.success());
     let combined = get_combined_output(&output);
-    assert!(combined.contains("<TO>"), "should show TO positional arg");
+    assert!(
+        combined.contains("<TO>") || combined.contains("[TO]"),
+        "should show TO arg: {combined}"
+    );
     assert!(combined.contains("--dry-run"), "should show --dry-run flag");
     assert!(
         combined.contains("--fee-token"),

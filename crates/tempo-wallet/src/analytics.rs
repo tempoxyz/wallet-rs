@@ -36,11 +36,13 @@ pub(crate) struct WalletCreatedPayload {
 pub(crate) struct WalletFundPayload {
     pub(crate) network: String,
     pub(crate) method: String,
+    pub(crate) target: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct WalletFundFailurePayload {
     pub(crate) network: String,
     pub(crate) method: String,
+    pub(crate) target: String,
     pub(crate) error: String,
 }

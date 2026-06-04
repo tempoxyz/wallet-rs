@@ -1,5 +1,7 @@
 //! CLI argument definitions and parsing.
 
+use std::path::PathBuf;
+
 use clap::{Parser, Subcommand};
 
 /// Long version string including git commit, build date, and profile.
@@ -28,6 +30,7 @@ pub(crate) struct Cli {
 }
 
 #[derive(Subcommand, Debug)]
+#[allow(clippy::large_enum_variant)]
 pub(crate) enum Commands {
     /// Sign up or log in to your Tempo wallet
     #[command(display_order = 1)]
@@ -48,31 +51,67 @@ pub(crate) enum Commands {
     },
     /// Show who you are: wallet, balances, keys
     #[command(display_order = 4)]
-    Whoami,
+    Whoami {
+        /// Show Coinflow credits balance
+        #[arg(long)]
+        credits: bool,
+    },
     /// List keys and their spending limits
     #[command(display_order = 5, name = "keys")]
     Keys,
     /// Transfer tokens to an address
     #[command(display_order = 6, arg_required_else_help = true)]
-    #[command(after_help = "\
+    #[command(after_help = r#"
 Examples:
   tempo wallet transfer 1.00 0x20c0...b50 0x70997...9C8
-  tempo wallet transfer 50 0x20c0...b50 0x70997...9C8 --dry-run")]
+  tempo wallet transfer 50 0x20c0...b50 0x70997...9C8 --dry-run
+  tempo wallet transfer --credits --amount-cents 500 --to 0x20c0...b50
+  tempo wallet transfer --credits --mpp-challenge <WWW_AUTHENTICATE>"#)]
     Transfer {
-        /// Amount in human units ("1.00", "50")
-        amount: String,
-        /// Token contract address (0x...)
-        token: String,
+        /// Amount in human units ("1.00", "50") — required for token transfers
+        #[arg(required_unless_present = "credits")]
+        amount: Option<String>,
+        /// Token contract address (0x...) — required for token transfers
+        #[arg(required_unless_present = "credits")]
+        token: Option<String>,
         /// Recipient address (0x...)
-        to: String,
+        #[arg(required_unless_present = "credits")]
+        to: Option<String>,
         /// Pay fees in a different token (default: same token)
         #[arg(long)]
         fee_token: Option<String>,
         /// Show plan + fee estimate, don't send
         #[arg(long)]
         dry_run: bool,
+        /// Pay with Coinflow credits instead of tokens
+        #[arg(long)]
+        credits: bool,
+        /// Amount in USD cents when using --credits (e.g. 500 = $5.00)
+        #[arg(long, requires = "credits")]
+        amount_cents: Option<u64>,
+        /// Recipient address when using --credits (0x...)
+        #[arg(long = "to", requires = "credits")]
+        credits_to: Option<String>,
+        /// Calldata hex when using --credits (0x...)
+        #[arg(long, requires = "credits", default_value = "0x")]
+        data: String,
+        /// ETH value in wei when using --credits (default: 0)
+        #[arg(long, requires = "credits", default_value = "0")]
+        value: String,
+        /// MPP WWW-Authenticate challenge when using --credits
+        #[arg(long, requires = "credits", conflicts_with = "mpp_challenge_file")]
+        mpp_challenge: Option<String>,
+        /// File containing an MPP WWW-Authenticate challenge when using --credits
+        #[arg(long, requires = "credits", conflicts_with = "mpp_challenge")]
+        mpp_challenge_file: Option<PathBuf>,
+        /// Optional client ID to include in the generated MPP attribution memo
+        #[arg(long, requires = "credits")]
+        mpp_client_id: Option<String>,
+        /// Wallet address (defaults to current wallet)
+        #[arg(long)]
+        address: Option<String>,
     },
-    /// Fund your wallet (testnet faucet or mainnet bridge)
+    /// Open add-funds flows in the wallet app
     #[command(display_order = 7, name = "fund")]
     Fund {
         /// Wallet address to fund (defaults to current wallet)
@@ -81,6 +120,20 @@ Examples:
         /// Do not attempt to open a browser
         #[arg(long)]
         no_browser: bool,
+        /// Open the direct crypto funding flow (bridge on mainnet, faucet on testnet)
+        #[arg(long, conflicts_with_all = ["credits", "referral_code"])]
+        crypto: bool,
+        /// Open the credits purchase flow
+        #[arg(long, conflicts_with_all = ["crypto", "referral_code"])]
+        credits: bool,
+        /// Open the referral-code redeem flow with a prefilled code
+        #[arg(
+            long,
+            value_name = "CODE",
+            visible_alias = "claim",
+            conflicts_with_all = ["crypto", "credits"]
+        )]
+        referral_code: Option<String>,
     },
     /// Manage payment sessions
     #[command(display_order = 8, name = "sessions")]

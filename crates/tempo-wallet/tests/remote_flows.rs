@@ -5,7 +5,11 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use axum::{routing::post, Json, Router};
+use alloy::{sol, sol_types::SolCall};
+use axum::{
+    routing::{get, post},
+    Json, Router,
+};
 use serde_json::json;
 use tempo_test::{mock_rpc_response, TestConfigBuilder, MODERATO_DIRECT_KEYS_TOML};
 
@@ -14,6 +18,14 @@ use common::test_command;
 const AUTHORIZED_WALLET_ADDRESS: &str = "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266";
 const MODERATO_TOKEN_ADDRESS: &str = "0x20c0000000000000000000000000000000000000";
 const BALANCE_OF_SELECTOR: &str = "70a08231";
+const CREDITS_CONTRACT_ADDRESS: &str = "0xbF720eF3c2BC8AA59a282782da26b56918eB3D7a";
+const CREDIT_SEED: &str = "tempo-test-credit-seed";
+
+sol! {
+    interface ITempoCredits {
+        function getCreditsBalance(address customerWallet_, string creditSeed_) external view returns (uint256);
+    }
+}
 
 struct MockLoginServer {
     base_url: String,
@@ -117,12 +129,21 @@ struct BalanceSequenceRpcServer {
     base_url: String,
     balances: Arc<Mutex<VecDeque<String>>>,
     last_value: Arc<Mutex<String>>,
+    credit_balances: Arc<Mutex<VecDeque<String>>>,
+    last_credit_value: Arc<Mutex<String>>,
     shutdown_tx: Option<tokio::sync::oneshot::Sender<()>>,
     _handle: tokio::task::JoinHandle<()>,
 }
 
 impl BalanceSequenceRpcServer {
     async fn start(raw_balances: Vec<&str>) -> Self {
+        Self::start_with_credit_balances(raw_balances, Vec::new()).await
+    }
+
+    async fn start_with_credit_balances(
+        raw_balances: Vec<&str>,
+        raw_credit_balances: Vec<&str>,
+    ) -> Self {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let base_url = format!("http://{}:{}", addr.ip(), addr.port());
@@ -134,36 +155,83 @@ impl BalanceSequenceRpcServer {
                 .collect(),
         ));
         let last_value = Arc::new(Mutex::new(String::from("0")));
+        let credit_balances = Arc::new(Mutex::new(
+            raw_credit_balances
+                .into_iter()
+                .map(std::string::ToString::to_string)
+                .collect(),
+        ));
+        let last_credit_value = Arc::new(Mutex::new(String::from("0")));
 
         let shared_balances = balances.clone();
         let shared_last_value = last_value.clone();
+        let rpc_credit_balances = credit_balances.clone();
+        let rpc_last_credit_value = last_credit_value.clone();
+        let http_credit_balances = credit_balances.clone();
+        let http_last_credit_value = last_credit_value.clone();
 
-        let app = Router::new().route(
-            "/",
-            post(move |Json(body): Json<serde_json::Value>| {
-                let shared_balances = shared_balances.clone();
-                let shared_last_value = shared_last_value.clone();
-                async move {
-                    if let Some(batch) = body.as_array() {
-                        let response = serde_json::Value::Array(
-                            batch
-                                .iter()
-                                .map(|req| {
-                                    handle_rpc_request(req, &shared_balances, &shared_last_value)
-                                })
-                                .collect(),
-                        );
-                        Json(response)
-                    } else {
-                        Json(handle_rpc_request(
-                            &body,
-                            &shared_balances,
-                            &shared_last_value,
-                        ))
+        let app = Router::new()
+            .route(
+                "/",
+                post(move |Json(body): Json<serde_json::Value>| {
+                    let shared_balances = shared_balances.clone();
+                    let shared_last_value = shared_last_value.clone();
+                    let shared_credit_balances = rpc_credit_balances.clone();
+                    let shared_last_credit_value = rpc_last_credit_value.clone();
+                    async move {
+                        if let Some(batch) = body.as_array() {
+                            let response = serde_json::Value::Array(
+                                batch
+                                    .iter()
+                                    .map(|req| {
+                                        handle_rpc_request(
+                                            req,
+                                            &shared_balances,
+                                            &shared_last_value,
+                                            &shared_credit_balances,
+                                            &shared_last_credit_value,
+                                        )
+                                    })
+                                    .collect(),
+                            );
+                            Json(response)
+                        } else {
+                            Json(handle_rpc_request(
+                                &body,
+                                &shared_balances,
+                                &shared_last_value,
+                                &shared_credit_balances,
+                                &shared_last_credit_value,
+                            ))
+                        }
                     }
-                }
-            }),
-        );
+                }),
+            )
+            .route(
+                "/api/coinflow/balances",
+                get(move || {
+                    let shared_credit_balances = http_credit_balances.clone();
+                    let shared_last_credit_value = http_last_credit_value.clone();
+                    async move {
+                        let raw = next_balance(&shared_credit_balances, &shared_last_credit_value);
+                        Json(json!({
+                            "credits": {
+                                "rawAmount": raw,
+                            }
+                        }))
+                    }
+                }),
+            )
+            .route(
+                "/api/coinflow/config",
+                get(|| async {
+                    Json(json!({
+                        "merchantId": "merchant-test",
+                        "creditSeed": CREDIT_SEED,
+                        "env": "sandbox",
+                    }))
+                }),
+            );
 
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
         let handle = tokio::spawn(async move {
@@ -179,9 +247,15 @@ impl BalanceSequenceRpcServer {
             base_url,
             balances,
             last_value,
+            credit_balances,
+            last_credit_value,
             shutdown_tx: Some(shutdown_tx),
             _handle: handle,
         }
+    }
+
+    fn auth_url(&self) -> String {
+        format!("{}/cli-auth", self.base_url)
     }
 }
 
@@ -197,9 +271,21 @@ fn handle_rpc_request(
     req: &serde_json::Value,
     balances: &Arc<Mutex<VecDeque<String>>>,
     last_value: &Arc<Mutex<String>>,
+    credit_balances: &Arc<Mutex<VecDeque<String>>>,
+    last_credit_value: &Arc<Mutex<String>>,
 ) -> serde_json::Value {
     if is_fund_balance_request(req) {
         let raw = next_balance(balances, last_value);
+        let encoded = encode_raw_balance(&raw);
+        return json!({
+            "jsonrpc": "2.0",
+            "id": req["id"].clone(),
+            "result": encoded,
+        });
+    }
+
+    if is_credit_balance_request(req) {
+        let raw = next_balance(credit_balances, last_credit_value);
         let encoded = encode_raw_balance(&raw);
         return json!({
             "jsonrpc": "2.0",
@@ -246,10 +332,37 @@ fn assert_login_server_saw_testnet(login: &MockLoginServer) {
     }
 }
 
-fn assert_remote_fund_handoff(stderr: &str) {
-    assert!(stderr.contains("Fund URL:"), "{stderr}");
-    assert!(stderr.contains("Open this link on your device"), "{stderr}");
+fn assert_remote_fund_handoff(stderr: &str, expected_url: &str) {
+    assert!(
+        stderr.contains(&format!("Fund URL: {expected_url}")),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains(&format!("Open this link on your device: {expected_url}")),
+        "{stderr}"
+    );
     assert!(stderr.contains("After funding is complete"), "{stderr}");
+}
+
+fn assert_remote_credits_handoff(stderr: &str, expected_url: &str) {
+    assert!(
+        stderr.contains(&format!("Fund URL: {expected_url}")),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains(&format!("Open this link on your device: {expected_url}")),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("Complete the credits purchase in the wallet app."),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("After purchasing credits, return here to continue."),
+        "{stderr}"
+    );
+    assert!(stderr.contains("Waiting for credits..."), "{stderr}");
+    assert!(!stderr.contains("Waiting for funding..."), "{stderr}");
 }
 
 fn is_fund_balance_request(req: &serde_json::Value) -> bool {
@@ -276,6 +389,35 @@ fn is_fund_balance_request(req: &serde_json::Value) -> bool {
 
     normalized_hex(to) == normalized_hex(MODERATO_TOKEN_ADDRESS)
         && data.eq_ignore_ascii_case(&balance_of_call_data(AUTHORIZED_WALLET_ADDRESS))
+}
+
+fn is_credit_balance_request(req: &serde_json::Value) -> bool {
+    if req["method"].as_str() != Some("eth_call") {
+        return false;
+    }
+
+    let Some(params) = req["params"].as_array() else {
+        return false;
+    };
+    let Some(call) = params.first().and_then(serde_json::Value::as_object) else {
+        return false;
+    };
+    let Some(to) = call.get("to").and_then(serde_json::Value::as_str) else {
+        return false;
+    };
+    let Some(data) = call
+        .get("data")
+        .or_else(|| call.get("input"))
+        .and_then(serde_json::Value::as_str)
+    else {
+        return false;
+    };
+
+    normalized_hex(to) == normalized_hex(CREDITS_CONTRACT_ADDRESS)
+        && data.eq_ignore_ascii_case(&credits_balance_call_data(
+            AUTHORIZED_WALLET_ADDRESS,
+            CREDIT_SEED,
+        ))
 }
 
 fn next_balance(
@@ -310,6 +452,16 @@ fn balance_of_call_data(account: &str) -> String {
     format!("0x{BALANCE_OF_SELECTOR}{:0>64}", normalized_hex(account))
 }
 
+fn credits_balance_call_data(account: &str, credit_seed: &str) -> String {
+    let call = ITempoCredits::getCreditsBalanceCall {
+        customerWallet_: account.parse().unwrap(),
+        creditSeed_: credit_seed.to_string(),
+    }
+    .abi_encode();
+
+    format!("0x{}", hex::encode(call))
+}
+
 fn moderato_config_toml(rpc_url: &str) -> String {
     format!("[rpc]\n\"tempo-moderato\" = \"{rpc_url}\"\n")
 }
@@ -334,6 +486,8 @@ fn unrelated_eth_call_uses_default_rpc_response_and_does_not_advance_balance_seq
         String::from("1000000"),
     ])));
     let last_value = Arc::new(Mutex::new(String::from("0")));
+    let credit_balances = Arc::new(Mutex::new(VecDeque::new()));
+    let last_credit_value = Arc::new(Mutex::new(String::from("0")));
     let request = json!({
         "jsonrpc": "2.0",
         "id": 7,
@@ -347,7 +501,13 @@ fn unrelated_eth_call_uses_default_rpc_response_and_does_not_advance_balance_seq
         ]
     });
 
-    let response = handle_rpc_request(&request, &balances, &last_value);
+    let response = handle_rpc_request(
+        &request,
+        &balances,
+        &last_value,
+        &credit_balances,
+        &last_credit_value,
+    );
 
     assert_eq!(response, mock_rpc_response(&request, 42431));
     assert_eq!(
@@ -364,6 +524,8 @@ fn matching_balance_request_advances_sequence_and_repeats_last_value() {
         String::from("1000000"),
     ])));
     let last_value = Arc::new(Mutex::new(String::from("0")));
+    let credit_balances = Arc::new(Mutex::new(VecDeque::new()));
+    let last_credit_value = Arc::new(Mutex::new(String::from("0")));
     let request = json!({
         "jsonrpc": "2.0",
         "id": 8,
@@ -377,9 +539,27 @@ fn matching_balance_request_advances_sequence_and_repeats_last_value() {
         ]
     });
 
-    let first = handle_rpc_request(&request, &balances, &last_value);
-    let second = handle_rpc_request(&request, &balances, &last_value);
-    let third = handle_rpc_request(&request, &balances, &last_value);
+    let first = handle_rpc_request(
+        &request,
+        &balances,
+        &last_value,
+        &credit_balances,
+        &last_credit_value,
+    );
+    let second = handle_rpc_request(
+        &request,
+        &balances,
+        &last_value,
+        &credit_balances,
+        &last_credit_value,
+    );
+    let third = handle_rpc_request(
+        &request,
+        &balances,
+        &last_value,
+        &credit_balances,
+        &last_credit_value,
+    );
 
     assert_eq!(first["result"], encode_raw_balance("0"));
     assert_eq!(second["result"], encode_raw_balance("1000000"));
@@ -498,7 +678,7 @@ async fn fund_no_browser_prints_remote_safe_handoff_copy_and_detects_balance_cha
 
     assert!(output.status.success(), "fund should succeed: {output:?}");
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert_remote_fund_handoff(&stderr);
+    assert_remote_fund_handoff(&stderr, "https://wallet.tempo.xyz/?action=fund");
     assert!(rpc.balances.lock().unwrap().is_empty());
     assert_eq!(rpc.last_value.lock().unwrap().as_str(), "1000000");
 }
@@ -516,7 +696,7 @@ async fn fund_no_browser_json_prints_remote_handoff() {
 
     assert!(output.status.success(), "fund should succeed: {output:?}");
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert_remote_fund_handoff(&stderr);
+    assert_remote_fund_handoff(&stderr, "https://wallet.tempo.xyz/?action=fund");
     assert!(rpc.balances.lock().unwrap().is_empty());
     assert_eq!(rpc.last_value.lock().unwrap().as_str(), "1000000");
 }
@@ -534,9 +714,132 @@ async fn fund_no_browser_toon_prints_remote_handoff() {
 
     assert!(output.status.success(), "fund should succeed: {output:?}");
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert_remote_fund_handoff(&stderr);
+    assert_remote_fund_handoff(&stderr, "https://wallet.tempo.xyz/?action=fund");
     assert!(rpc.balances.lock().unwrap().is_empty());
     assert_eq!(rpc.last_value.lock().unwrap().as_str(), "1000000");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn fund_no_browser_crypto_uses_direct_crypto_link() {
+    let rpc = BalanceSequenceRpcServer::start(vec!["0", "1000000"]).await;
+    let temp = build_fund_temp(&rpc.base_url);
+
+    let output = test_command(&temp)
+        .env(
+            "TEMPO_AUTH_URL",
+            "https://wallet.moderato.tempo.xyz/cli-auth",
+        )
+        .args(["-n", "tempo-moderato", "fund", "--crypto", "--no-browser"])
+        .output()
+        .unwrap();
+
+    assert!(output.status.success(), "fund should succeed: {output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_remote_fund_handoff(&stderr, "https://wallet.moderato.tempo.xyz/?action=crypto");
+    assert!(rpc.balances.lock().unwrap().is_empty());
+    assert_eq!(rpc.last_value.lock().unwrap().as_str(), "1000000");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn fund_no_browser_referral_code_uses_claim_link() {
+    let rpc = BalanceSequenceRpcServer::start(vec!["0", "1000000"]).await;
+    let temp = build_fund_temp(&rpc.base_url);
+
+    let output = test_command(&temp)
+        .env(
+            "TEMPO_AUTH_URL",
+            "https://wallet.moderato.tempo.xyz/cli-auth",
+        )
+        .args([
+            "-n",
+            "tempo-moderato",
+            "fund",
+            "--referral-code",
+            "ABC123",
+            "--no-browser",
+        ])
+        .output()
+        .unwrap();
+
+    assert!(output.status.success(), "fund should succeed: {output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_remote_fund_handoff(&stderr, "https://wallet.moderato.tempo.xyz/?claim=ABC123");
+    assert!(rpc.balances.lock().unwrap().is_empty());
+    assert_eq!(rpc.last_value.lock().unwrap().as_str(), "1000000");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn fund_no_browser_credits_waits_for_credit_balance_change() {
+    let rpc = BalanceSequenceRpcServer::start_with_credit_balances(
+        vec!["0", "1000000"],
+        vec!["0", "10000"],
+    )
+    .await;
+    let temp = build_fund_temp(&rpc.base_url);
+    let expected_url = format!("{}/?action=credits", rpc.base_url);
+
+    let output = test_command(&temp)
+        .env("TEMPO_AUTH_URL", rpc.auth_url())
+        .env("TEMPO_CREDITS_RPC_URL", &rpc.base_url)
+        .args(["-n", "tempo-moderato", "fund", "--credits", "--no-browser"])
+        .output()
+        .unwrap();
+
+    assert!(output.status.success(), "fund should succeed: {output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_remote_credits_handoff(&stderr, &expected_url);
+    assert!(stderr.contains("Credits received!"), "{stderr}");
+    assert!(stderr.contains("Credit balance: 0 -> 1"), "{stderr}");
+    assert_eq!(
+        rpc.balances
+            .lock()
+            .unwrap()
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>(),
+        vec![String::from("0"), String::from("1000000")]
+    );
+    assert_eq!(rpc.last_value.lock().unwrap().as_str(), "0");
+    assert!(rpc.credit_balances.lock().unwrap().is_empty());
+    assert_eq!(rpc.last_credit_value.lock().unwrap().as_str(), "10000");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn credits_shows_current_credit_balance() {
+    let rpc = BalanceSequenceRpcServer::start_with_credit_balances(vec!["0"], vec!["12345"]).await;
+    let temp = build_fund_temp(&rpc.base_url);
+
+    let output = test_command(&temp)
+        .env("TEMPO_AUTH_URL", rpc.auth_url())
+        .env("TEMPO_CREDITS_RPC_URL", &rpc.base_url)
+        .args(["-n", "tempo-moderato", "whoami", "--credits"])
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "credits should succeed: {output:?}"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.trim().is_empty(), "{stderr}");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Wallet"), "{stdout}");
+    assert!(stdout.contains(AUTHORIZED_WALLET_ADDRESS), "{stdout}");
+    assert!(stdout.contains("Credits"), "{stdout}");
+    assert!(stdout.contains("1.2345"), "{stdout}");
+    let remaining_credit_balances = rpc
+        .credit_balances
+        .lock()
+        .unwrap()
+        .iter()
+        .cloned()
+        .collect::<Vec<_>>();
+    assert!(
+        remaining_credit_balances.is_empty(),
+        "{remaining_credit_balances:#?}"
+    );
+    assert_eq!(rpc.last_credit_value.lock().unwrap().as_str(), "12345");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -552,7 +855,10 @@ async fn fund_default_flow_keeps_local_copy_and_does_not_print_remote_handoff_te
 
     assert!(output.status.success(), "fund should succeed: {output:?}");
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("Fund URL:"), "{stderr}");
+    assert!(
+        stderr.contains("Fund URL: https://wallet.tempo.xyz/?action=fund"),
+        "{stderr}"
+    );
     assert!(
         !stderr.contains("Open this link on your device"),
         "unexpected remote-safe handoff text: {stderr}"
