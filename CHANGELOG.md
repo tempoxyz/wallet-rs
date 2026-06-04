@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.5 (2026-06-04)
+
+### Minor Changes
+
+- Add wallet CLI support for checking and spending Coinflow credits, and update shared signer handling so wallet flows can emit the expected Tempo signature format for these transactions. (by @alexrisch, [#471](https://github.com/tempoxyz/wallet/pull/471))
+
 ## 0.4.4 (2026-06-03)
 
 ### Patch Changes

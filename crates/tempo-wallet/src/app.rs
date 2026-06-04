@@ -8,8 +8,10 @@ use crate::{
     },
 };
 use std::path::PathBuf;
-use tempo_common::cli::context::Context;
-use tempo_common::error::{ConfigError, TempoError};
+use tempo_common::{
+    cli::context::Context,
+    error::{ConfigError, TempoError},
+};
 
 /// Run the tempo-wallet application.
 pub(crate) async fn run(mut cli: Cli) -> Result<(), TempoError> {
