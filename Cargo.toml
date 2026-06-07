@@ -51,7 +51,7 @@ tempo-primitives = { version = "1.6", features = ["serde"] }
 thiserror = "2.0"
 time = "0.3"
 tokio = { version = "1.52", features = ["macros", "rt-multi-thread", "signal"] }
-toon-format = "0.4"
+toon-format = "0.5"
 toml = "1.1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
