@@ -32,6 +32,16 @@ pub(super) fn persist_session(
         }
     })?;
 
+    let descriptor_json = state
+        .descriptor
+        .as_ref()
+        .map(serde_json::to_string)
+        .transpose()
+        .map_err(|source| PaymentError::ChannelPersistenceSource {
+            operation: "serialize channel descriptor",
+            source: Box::new(source),
+        })?;
+
     let record = if let Some(mut rec) = existing {
         // Update existing record
         rec.set_cumulative_amount(state.cumulative_amount);
@@ -41,6 +51,8 @@ pub(super) fn persist_session(
         }
         rec.deposit = state.deposit;
         rec.challenge_echo = echo_json;
+        rec.session_protocol = state.session_protocol.clone();
+        rec.descriptor_json = descriptor_json;
         rec.touch();
         rec
     } else {
@@ -56,6 +68,8 @@ pub(super) fn persist_session(
             authorized_signer: ctx.signer.signer.address(),
             salt: ctx.salt.clone(),
             channel_id: state.channel_id,
+            session_protocol: state.session_protocol.clone(),
+            descriptor_json,
             deposit: state.deposit,
             cumulative_amount: state.cumulative_amount,
             accepted_cumulative: state.accepted_cumulative,

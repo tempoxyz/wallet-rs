@@ -78,22 +78,47 @@ pub(super) async fn try_server_close(
         url = close_url,
         "coop close"
     );
-    let sig = sign_voucher(
-        signer,
-        channel_id,
-        cumulative_amount,
-        escrow_contract,
-        chain_id,
-    )
-    .await
-    .map_err(|source| KeyError::SigningOperationSource {
-        operation: "sign close voucher",
-        source: Box::new(source),
-    })?;
-    let payload = SessionCredentialPayload::Close {
-        channel_id: format!("{channel_id:#x}"),
-        cumulative_amount: cumulative_amount.to_string(),
-        signature: format!("0x{}", hex::encode(sig)),
+    let payload = if record.session_protocol_or_legacy()
+        == mpp::protocol::methods::tempo::session::SESSION_PROTOCOL_TIP1034
+    {
+        let descriptor = record
+            .descriptor()
+            .ok_or_else(|| KeyError::SigningOperation {
+                operation: "sign TIP-1034 close voucher",
+                reason: "missing channel descriptor".to_string(),
+            })?;
+        mpp::client::tempo::session::channel_ops::create_precompile_close_payload_with_descriptor_and_escrow(
+            signer,
+            channel_id,
+            descriptor,
+            cumulative_amount,
+            escrow_contract,
+            chain_id,
+        )
+        .await
+        .map_err(|source| KeyError::SigningOperationSource {
+            operation: "sign TIP-1034 close voucher",
+            source: Box::new(source),
+        })?
+    } else {
+        let sig = sign_voucher(
+            signer,
+            channel_id,
+            cumulative_amount,
+            escrow_contract,
+            chain_id,
+        )
+        .await
+        .map_err(|source| KeyError::SigningOperationSource {
+            operation: "sign close voucher",
+            source: Box::new(source),
+        })?;
+        SessionCredentialPayload::Close {
+            channel_id: format!("{channel_id:#x}"),
+            descriptor: None,
+            cumulative_amount: cumulative_amount.to_string(),
+            signature: format!("0x{}", hex::encode(sig)),
+        }
     };
     let source = credential_source_from_payer(&record.payer, chain_id);
     let credential = mpp::PaymentCredential::with_source(echo.clone(), source, payload);
@@ -178,6 +203,7 @@ mod tests {
     fn close_payload_uses_spec_field_names() {
         let payload = SessionCredentialPayload::Close {
             channel_id: "0xabc".to_string(),
+            descriptor: None,
             cumulative_amount: "42".to_string(),
             signature: "0xdeadbeef".to_string(),
         };
@@ -253,6 +279,9 @@ mod tests {
             channel_id: "0x0000000000000000000000000000000000000000000000000000000000000001"
                 .parse()
                 .unwrap(),
+            session_protocol: mpp::protocol::methods::tempo::session::SESSION_PROTOCOL_LEGACY
+                .to_string(),
+            descriptor_json: None,
             deposit: 1000,
             cumulative_amount: 2,
             accepted_cumulative: 0,

@@ -211,7 +211,8 @@ fn mpp_parsing_tolerates_unknown_fields_for_session_boundary_types() {
         SessionCredentialPayload::Voucher {
             channel_id,
             cumulative_amount,
-            signature
+            signature,
+            ..
         } if channel_id.starts_with("0x") && cumulative_amount == "123" && signature == "0xdeadbeef"
     ));
 

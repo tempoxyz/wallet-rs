@@ -9,8 +9,9 @@ use alloy::{
     providers::Provider,
     rpc::types::{Filter, TransactionRequest},
     sol,
-    sol_types::SolCall,
+    sol_types::{SolCall, SolValue},
 };
+use mpp::protocol::methods::tempo::session::ChannelDescriptor;
 
 use crate::{
     config::Config,
@@ -230,6 +231,51 @@ pub async fn get_channel_on_chain(
         deposit: decoded.deposit,
         settled: decoded.settled,
         close_requested_at: decoded.closeRequestedAt,
+    }))
+}
+
+pub(super) async fn get_precompile_channel_on_chain(
+    provider: &alloy::providers::RootProvider<alloy::network::Ethereum>,
+    escrow_contract: Address,
+    descriptor: &ChannelDescriptor,
+) -> ChannelResult<Option<OnChainChannel>> {
+    let call_data =
+        mpp::client::tempo::session::channel_ops::encode_precompile_get_channel_call(descriptor)
+            .map_err(|source| NetworkError::RpcSource {
+                operation: "encode TIP-1034 channel state query",
+                source: Box::new(source),
+            })?;
+
+    let tx = TransactionRequest::default()
+        .to(escrow_contract)
+        .input(call_data.into());
+
+    let result = provider
+        .call(tx)
+        .await
+        .map_err(|source| NetworkError::RpcSource {
+            operation: "query TIP-1034 channel state",
+            source: Box::new(source),
+        })?;
+    let decoded =
+        <(bool, u64, Address, Address, Address, Address, u128, u128)>::abi_decode(&result)
+            .map_err(|source| NetworkError::RpcSource {
+                operation: "decode TIP-1034 channel state",
+                source: Box::new(source),
+            })?;
+
+    if decoded.6 == 0 || decoded.0 {
+        return Ok(None);
+    }
+
+    Ok(Some(OnChainChannel {
+        payer: decoded.2,
+        payee: decoded.3,
+        token: decoded.4,
+        authorized_signer: decoded.5,
+        deposit: decoded.6,
+        settled: decoded.7,
+        close_requested_at: decoded.1,
     }))
 }
 

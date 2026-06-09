@@ -38,7 +38,7 @@ getrandom = "0.4"
 hex = "0.4"
 minisign = "0.9"
 hostname = "0.4"
-mpp = { git = "https://github.com/tempoxyz/mpp-rs", rev = "8ba76311d991965d745489bce63a8c819855158a", features = ["tempo", "evm", "utils", "client", "server"] }
+mpp = { git = "https://github.com/tempoxyz/mpp-rs", rev = "0d57f96ff670b290801b2ead9e0f1d637e0f2b3e", features = ["tempo", "evm", "utils", "client", "server"] }
 posthog-rs = "0.7.3"
 qrcode = { version = "0.14", default-features = false }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "http2", "json"] }

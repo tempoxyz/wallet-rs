@@ -96,7 +96,7 @@ async fn error_after_payment_preserves_state_and_surfaces_dispute_message() {
         invalidating_problem_type_once: None,
         insufficient_balance_once: false,
         amount_exceeds_deposit_once: false,
-        error_after_payment_once_status: Some(500),
+        error_after_payment_once_status: Some(401),
         response_delay_ms: 0,
     })
     .await;
@@ -121,6 +121,10 @@ async fn error_after_payment_preserves_state_and_surfaces_dispute_message() {
     assert!(
         combined.contains("channel state preserved for on-chain dispute"),
         "error should surface preserved-state dispute message: {combined}"
+    );
+    assert!(
+        combined.contains("upstream failed after voucher authorization"),
+        "error should surface upstream response body: {combined}"
     );
 
     let observed = server.snapshot();
@@ -680,6 +684,52 @@ async fn strict_open_missing_receipt_preserves_channel_state() {
     assert_eq!(
         channels[0].state, "active",
         "strict open failure should preserve an active channel record for recovery"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn tip1034_open_error_preserves_descriptor_channel_state() {
+    let rpc = SessionRpcServer::start().await;
+    let server = SessionServer::start(SessionServerConfig {
+        payee_mode: PayeeMode::Fixed,
+        open_receipt_accepted: None,
+        sse_voucher_flow: false,
+        voucher_head_unsupported: false,
+        sse_receipt_accepted: None,
+        sse_required_cumulative: None,
+        sse_reported_deposit: None,
+        invalidating_problem_type_once: None,
+        insufficient_balance_once: false,
+        amount_exceeds_deposit_once: false,
+        error_after_payment_once_status: None,
+        response_delay_ms: 0,
+    })
+    .await;
+
+    let temp = tempfile::TempDir::new().unwrap();
+    setup_config_only(&temp, &rpc.base_url);
+
+    let output = run_session_request(&temp, &server.url("/resource-tip1034-open-error"));
+    assert!(
+        !output.status.success(),
+        "TIP-1034 open error should fail the request: {}",
+        get_combined_output(&output)
+    );
+
+    let channels = load_channels(&temp);
+    assert_eq!(
+        channels.len(),
+        1,
+        "TIP-1034 open error should preserve recoverable local channel state"
+    );
+    assert_eq!(channels[0].state, "active");
+    assert_eq!(
+        channels[0].session_protocol,
+        mpp::protocol::methods::tempo::session::SESSION_PROTOCOL_TIP1034
+    );
+    assert!(
+        channels[0].descriptor_json.is_some(),
+        "TIP-1034 recovery state must include the channel descriptor"
     );
 }
 

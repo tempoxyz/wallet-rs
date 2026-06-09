@@ -438,12 +438,24 @@ async fn send_top_up_request(
     additional_deposit: u128,
     idempotency_key: &str,
 ) -> Result<HttpResponse, TempoError> {
-    let calls = session::build_top_up_calls(
-        ctx.token,
-        state.escrow_contract,
-        state.channel_id,
-        additional_deposit,
-    );
+    let calls = if state.is_tip1034() {
+        let descriptor =
+            state
+                .descriptor
+                .as_ref()
+                .ok_or_else(|| PaymentError::ChallengeSchema {
+                    context: "TIP-1034 topUp",
+                    reason: "missing channel descriptor".to_string(),
+                })?;
+        session::build_tip1034_top_up_calls(descriptor, additional_deposit)?
+    } else {
+        session::build_top_up_calls(
+            ctx.token,
+            state.escrow_contract,
+            state.channel_id,
+            additional_deposit,
+        )
+    };
 
     let payment = open::create_tempo_payment_from_calls(
         ctx.rpc_url,
@@ -455,7 +467,12 @@ async fn send_top_up_request(
     )
     .await?;
     let tx_hex = format!("0x{}", hex::encode(&payment.tx_bytes));
-    let payload = build_top_up_payload(state.channel_id, tx_hex, additional_deposit);
+    let payload = build_top_up_payload(
+        state.channel_id,
+        tx_hex,
+        state.descriptor.clone(),
+        additional_deposit,
+    );
 
     let credential =
         mpp::PaymentCredential::with_source(echo.clone(), ctx.did.to_string(), payload);
@@ -586,6 +603,10 @@ async fn send_session_request(
             .request(ctx.http.method().clone(), ctx.url)
             .header("Authorization", &voucher_auth)
             .header("Idempotency-Key", &request_idempotency_key);
+        if state.is_tip1034() {
+            data_request =
+                data_request.header("Payment-Session", format!("{:#x}", state.channel_id));
+        }
         data_request = crate::http::HttpClient::apply_body_from(data_request, ctx.http.body());
 
         let response = data_request
@@ -765,6 +786,9 @@ struct ResolvedSessionChallenge {
     payee: Address,
     fee_payer: bool,
     suggested_channel_id: Option<B256>,
+    session_protocol: String,
+    operator: Option<Address>,
+    session_snapshot: Option<mpp::protocol::methods::tempo::session::SessionSnapshot>,
     echo: mpp::ChallengeEcho,
     origin: String,
     session_key: String,
@@ -872,6 +896,9 @@ fn build_ondemand_reuse_record(
         cumulative_amount: on_chain.settled,
         accepted_cumulative: on_chain.settled,
         server_spent: 0,
+        session_protocol: mpp::protocol::methods::tempo::session::SESSION_PROTOCOL_LEGACY
+            .to_string(),
+        descriptor_json: None,
         challenge_echo,
         state: session::ChannelStatus::Active,
         close_requested_at: 0,
@@ -879,6 +906,212 @@ fn build_ondemand_reuse_record(
         created_at: now,
         last_used_at: now,
     })
+}
+
+fn parse_snapshot_amount(value: &str, context: &'static str) -> Result<u128, TempoError> {
+    challenge_u128_parse(value, context)
+}
+
+fn parse_snapshot_address(value: &str, context: &'static str) -> Result<Address, TempoError> {
+    value
+        .parse()
+        .map_err(|source| challenge_address_parse(context, source).into())
+}
+
+fn validate_snapshot_descriptor(
+    challenge: &ResolvedSessionChallenge,
+    snapshot: &mpp::protocol::methods::tempo::session::SessionSnapshot,
+) -> Result<(B256, B256), TempoError> {
+    if snapshot.chain_id != challenge.chain_id {
+        return Err(PaymentError::ChallengeSchema {
+            context: "TIP-1034 sessionSnapshot chainId",
+            reason: format!(
+                "chainId mismatch (expected {}, got {})",
+                challenge.chain_id, snapshot.chain_id
+            ),
+        }
+        .into());
+    }
+
+    let escrow = parse_snapshot_address(&snapshot.escrow, "TIP-1034 sessionSnapshot escrow")?;
+    if escrow != challenge.escrow_contract {
+        return Err(PaymentError::ChallengeSchema {
+            context: "TIP-1034 sessionSnapshot escrow",
+            reason: format!(
+                "escrow mismatch (expected {:#x}, got {escrow:#x})",
+                challenge.escrow_contract
+            ),
+        }
+        .into());
+    }
+
+    let descriptor = &snapshot.descriptor;
+    let payer = parse_snapshot_address(&descriptor.payer, "TIP-1034 snapshot descriptor payer")?;
+    let payee = parse_snapshot_address(&descriptor.payee, "TIP-1034 snapshot descriptor payee")?;
+    let operator = parse_snapshot_address(
+        &descriptor.operator,
+        "TIP-1034 snapshot descriptor operator",
+    )?;
+    let token = parse_snapshot_address(&descriptor.token, "TIP-1034 snapshot descriptor token")?;
+    let authorized_signer = parse_snapshot_address(
+        &descriptor.authorized_signer,
+        "TIP-1034 snapshot descriptor authorizedSigner",
+    )?;
+    let salt = descriptor
+        .salt
+        .parse::<B256>()
+        .map_err(|_| PaymentError::ChallengeParse {
+            context: "TIP-1034 snapshot descriptor salt",
+            reason: format!(
+                "invalid salt bytes32 value: {}",
+                sanitize_for_terminal(&descriptor.salt)
+            ),
+        })?;
+
+    if payer != challenge.from
+        || payee != challenge.payee
+        || token != challenge.token
+        || authorized_signer != challenge.key_address
+    {
+        return Err(PaymentError::ChallengeSchema {
+            context: "TIP-1034 sessionSnapshot descriptor",
+            reason: "descriptor identity does not match session challenge".to_string(),
+        }
+        .into());
+    }
+
+    if let Some(expected_operator) = challenge.operator {
+        if operator != expected_operator {
+            return Err(PaymentError::ChallengeSchema {
+                context: "TIP-1034 sessionSnapshot descriptor",
+                reason: "descriptor operator does not match session challenge".to_string(),
+            }
+            .into());
+        }
+    }
+
+    let expected_channel_id =
+        mpp::client::tempo::session::channel_ops::compute_precompile_channel_id_from_descriptor_with_escrow(
+            descriptor,
+            challenge.escrow_contract,
+            challenge.chain_id,
+        )
+        .map_err(|source| PaymentError::ChallengeSchema {
+            context: "TIP-1034 sessionSnapshot descriptor",
+            reason: source.to_string(),
+        })?;
+    let snapshot_channel_id =
+        challenge_channel_id_parse(&snapshot.channel_id, "TIP-1034 sessionSnapshot channelId")?;
+
+    if snapshot_channel_id != expected_channel_id {
+        return Err(PaymentError::ChallengeSchema {
+            context: "TIP-1034 sessionSnapshot channelId",
+            reason: format!(
+                "channelId mismatch (expected {expected_channel_id:#x}, got {snapshot_channel_id:#x})"
+            ),
+        }
+        .into());
+    }
+
+    if let Some(suggested) = challenge.suggested_channel_id {
+        if suggested != snapshot_channel_id {
+            return Err(PaymentError::ChallengeSchema {
+                context: "TIP-1034 sessionSnapshot channelId",
+                reason: format!(
+                    "channelId mismatch with methodDetails.channelId (expected {suggested:#x}, got {snapshot_channel_id:#x})"
+                ),
+            }
+            .into());
+        }
+    }
+
+    Ok((snapshot_channel_id, salt))
+}
+
+fn build_snapshot_reuse_record(
+    challenge: &ResolvedSessionChallenge,
+    url: &str,
+    snapshot: &mpp::protocol::methods::tempo::session::SessionSnapshot,
+) -> Result<Option<session::ChannelRecord>, TempoError> {
+    let (channel_id, salt) = validate_snapshot_descriptor(challenge, snapshot)?;
+    let accepted_cumulative = parse_snapshot_amount(
+        &snapshot.accepted_cumulative,
+        "TIP-1034 sessionSnapshot acceptedCumulative",
+    )?;
+    let required_cumulative = parse_snapshot_amount(
+        &snapshot.required_cumulative,
+        "TIP-1034 sessionSnapshot requiredCumulative",
+    )?;
+    let deposit = parse_snapshot_amount(&snapshot.deposit, "TIP-1034 sessionSnapshot deposit")?;
+    let settled = parse_snapshot_amount(&snapshot.settled, "TIP-1034 sessionSnapshot settled")?;
+    let spent = parse_snapshot_amount(&snapshot.spent, "TIP-1034 sessionSnapshot spent")?;
+
+    if let Some(close_requested_at) = snapshot.close_requested_at.as_deref() {
+        if parse_snapshot_amount(
+            close_requested_at,
+            "TIP-1034 sessionSnapshot closeRequestedAt",
+        )? > 0
+        {
+            return Ok(None);
+        }
+    }
+
+    if settled > deposit || spent > accepted_cumulative || accepted_cumulative < settled {
+        return Err(PaymentError::ChallengeSchema {
+            context: "TIP-1034 sessionSnapshot amounts",
+            reason: "snapshot amounts are inconsistent".to_string(),
+        }
+        .into());
+    }
+
+    let expected_required = accepted_cumulative
+        .checked_add(challenge.amount)
+        .ok_or_else(|| PaymentError::ChallengeSchema {
+            context: "TIP-1034 sessionSnapshot requiredCumulative",
+            reason: "required cumulative amount overflows".to_string(),
+        })?;
+    if required_cumulative != expected_required {
+        return Err(PaymentError::ChallengeSchema {
+            context: "TIP-1034 sessionSnapshot requiredCumulative",
+            reason: format!(
+                "required cumulative must equal accepted cumulative plus request amount (expected {expected_required}, got {required_cumulative})"
+            ),
+        }
+        .into());
+    }
+
+    let now = session::now_secs();
+    let challenge_echo = serde_json::to_string(&challenge.echo)
+        .map_err(|err| session_store_error("serialize challenge echo", err))?;
+    let descriptor_json = serde_json::to_string(&snapshot.descriptor)
+        .map_err(|err| session_store_error("serialize TIP-1034 descriptor", err))?;
+
+    Ok(Some(session::ChannelRecord {
+        version: 1,
+        origin: challenge.origin.clone(),
+        request_url: url.to_string(),
+        chain_id: challenge.chain_id,
+        escrow_contract: challenge.escrow_contract,
+        token: challenge.token_hex.clone(),
+        payee: challenge.payee_hex.clone(),
+        payer: challenge.payer_hex.clone(),
+        authorized_signer: challenge.key_address,
+        salt: format!("{salt:#x}"),
+        channel_id,
+        deposit,
+        cumulative_amount: accepted_cumulative,
+        accepted_cumulative,
+        server_spent: spent,
+        session_protocol: mpp::protocol::methods::tempo::session::SESSION_PROTOCOL_TIP1034
+            .to_string(),
+        descriptor_json: Some(descriptor_json),
+        challenge_echo,
+        state: session::ChannelStatus::Active,
+        close_requested_at: 0,
+        grace_ready_at: 0,
+        created_at: now,
+        last_used_at: now,
+    }))
 }
 
 async fn challenge_stage(
@@ -910,8 +1143,15 @@ async fn challenge_stage(
     let escrow_contract: Address = escrow_str
         .parse()
         .map_err(|source| challenge_address_parse("session challenge escrow contract", source))?;
+    let session_protocol = session_req.session_protocol().unwrap_or_else(|| {
+        mpp::protocol::methods::tempo::session::SESSION_PROTOCOL_LEGACY.to_string()
+    });
+    let is_tip1034 =
+        session_protocol == mpp::protocol::methods::tempo::session::SESSION_PROTOCOL_TIP1034;
     let expected_escrow = resolved.network_id.escrow_contract();
-    if escrow_contract != expected_escrow {
+    let allowed_tip1034_escrow = is_tip1034
+        && mpp::client::tempo::session::channel_ops::is_precompile_escrow(escrow_contract);
+    if escrow_contract != expected_escrow && !allowed_tip1034_escrow {
         return Err(PaymentError::ChallengeUntrustedEscrow {
             context: "session challenge escrow contract",
             provided: escrow_str,
@@ -920,6 +1160,23 @@ async fn challenge_stage(
         }
         .into());
     }
+    let operator = if is_tip1034 {
+        session_req
+            .operator()
+            .map(|value| {
+                value.parse().map_err(|source| {
+                    challenge_address_parse("TIP-1034 session challenge operator", source)
+                })
+            })
+            .transpose()?
+    } else {
+        None
+    };
+    let session_snapshot = if is_tip1034 {
+        session_req.session_snapshot()
+    } else {
+        None
+    };
 
     let token: Address = session_req
         .currency
@@ -1004,6 +1261,9 @@ async fn challenge_stage(
             payee,
             fee_payer,
             suggested_channel_id,
+            session_protocol,
+            operator,
+            session_snapshot,
             echo,
             origin,
             session_key,
@@ -1122,6 +1382,15 @@ async fn reuse_stage_discover(
     deposit: &DepositStageOutput,
 ) -> Result<Option<ChannelReuseCandidate>, TempoError> {
     let mut reuse_candidates: Vec<session::ChannelRecord> = Vec::new();
+
+    if let Some(snapshot) = challenge.session_snapshot.as_ref() {
+        if let Some(record) = build_snapshot_reuse_record(challenge, url, snapshot)? {
+            return Ok(Some(ChannelReuseCandidate {
+                on_chain_deposit: record.deposit,
+                record,
+            }));
+        }
+    }
 
     if let Some(channel_id) = challenge.suggested_channel_id {
         let channel_id_hex = format!("{channel_id:#x}");
@@ -1248,6 +1517,8 @@ async fn reuse_stage_execute(
         accepted_cumulative: reusable.record.accepted_cumulative,
         max_cumulative_spend: max_spend,
         server_spent: reusable.record.server_spent,
+        session_protocol: reusable.record.session_protocol_or_legacy().to_string(),
+        descriptor: reusable.record.descriptor(),
     };
 
     validate_request_spend_limit(&state, challenge.network_id, state.cumulative_amount)?;
@@ -1343,6 +1614,7 @@ async fn build_and_send_open(
         channel_id,
         open_tx,
         challenge.key_address,
+        None,
         initial_cumulative,
         voucher_sig,
     );
@@ -1372,6 +1644,161 @@ async fn open_stage(
     max_spend: Option<u128>,
 ) -> Result<OpenExecutionPlan, TempoError> {
     let salt = B256::random();
+    if challenge.session_protocol
+        == mpp::protocol::methods::tempo::session::SESSION_PROTOCOL_TIP1034
+    {
+        let operator = challenge.operator.unwrap_or(Address::ZERO);
+        let open_calls = session::build_tip1034_open_calls(
+            challenge.token,
+            deposit.deposit,
+            challenge.payee,
+            operator,
+            salt,
+            challenge.key_address,
+        )?;
+        let payment = open::create_tempo_payment_from_calls(
+            resolved.rpc_url.as_str(),
+            signer,
+            open_calls,
+            challenge.token,
+            challenge.chain_id,
+            challenge.fee_payer,
+        )
+        .await?;
+        let descriptor = mpp::client::tempo::session::channel_ops::build_channel_descriptor(
+            challenge.from,
+            challenge.payee,
+            operator,
+            challenge.token,
+            salt,
+            challenge.key_address,
+            payment.expiring_nonce_hash,
+        );
+        let channel_id =
+            mpp::client::tempo::session::channel_ops::compute_precompile_channel_id_from_descriptor_with_escrow(
+                &descriptor,
+                challenge.escrow_contract,
+                challenge.chain_id,
+            )
+                .map_err(|source| PaymentError::ChallengeSchema {
+                    context: "TIP-1034 channel descriptor",
+                    reason: source.to_string(),
+                })?;
+
+        if http.log_enabled() {
+            let deposit_display = format_token_amount(deposit.deposit, challenge.network_id);
+            eprintln!("Opening TIP-1034 channel {channel_id:#x} (deposit: {deposit_display})");
+        }
+
+        let initial_cumulative = challenge.amount;
+        let voucher_sig =
+            mpp::protocol::methods::tempo::precompile_voucher::sign_precompile_voucher_with_escrow(
+                &signer.signer,
+                channel_id,
+                initial_cumulative,
+                challenge.escrow_contract,
+                challenge.chain_id,
+            )
+            .await
+            .map_err(|source| KeyError::SigningOperationSource {
+                operation: "sign TIP-1034 initial voucher",
+                source: Box::new(source),
+            })?;
+        let open_payload = build_open_payload(
+            channel_id,
+            format!("0x{}", hex::encode(&payment.tx_bytes)),
+            challenge.key_address,
+            Some(descriptor.clone()),
+            initial_cumulative,
+            &voucher_sig,
+        );
+        let credential = mpp::PaymentCredential::with_source(
+            challenge.echo.clone(),
+            challenge.did.clone(),
+            open_payload,
+        );
+        let auth_header = mpp::format_authorization(&credential).map_err(|source| {
+            PaymentError::ChallengeFormatSource {
+                context: "TIP-1034 open credential",
+                source: Box::new(source),
+            }
+        })?;
+
+        let open_idempotency_key = new_idempotency_key();
+        let delays = [2000_u64, 3000, 5000];
+        let mut state = ChannelState {
+            channel_id,
+            escrow_contract: challenge.escrow_contract,
+            chain_id: challenge.chain_id,
+            deposit: deposit.deposit,
+            cumulative_amount: initial_cumulative,
+            accepted_cumulative: 0,
+            max_cumulative_spend: max_spend,
+            server_spent: 0,
+            session_protocol: challenge.session_protocol.clone(),
+            descriptor: Some(descriptor),
+        };
+
+        validate_request_spend_limit(&state, challenge.network_id, state.cumulative_amount)?;
+        let salt_hex = format!("{salt:#x}");
+        let persist_on_error = |state: &ChannelState, e: TempoError| -> TempoError {
+            let ctx = build_channel_context(
+                signer,
+                http,
+                url,
+                resolved.rpc_url.as_str(),
+                challenge,
+                deposit,
+                salt_hex.clone(),
+            );
+            let _ = persist_session(&ctx, state);
+            e
+        };
+
+        let open_response =
+            open::send_open_with_retry(http, url, &auth_header, &open_idempotency_key, &delays)
+                .await
+                .map_err(|e| persist_on_error(&state, e))?;
+
+        let is_sse = open_response
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|ct| ct.contains("text/event-stream"));
+
+        if is_sse {
+            let status_code = open_response.status().as_u16();
+            let open_tx_hash = apply_response_receipt_from_headers(
+                &open_response,
+                &mut state,
+                "open response",
+                false,
+            )
+            .map_err(|e| persist_on_error(&state, e))?;
+            return Ok(OpenExecutionPlan {
+                state,
+                salt_hex,
+                open_tx_hash,
+                open_response: OpenResponse::Streaming {
+                    response: open_response,
+                    status_code,
+                },
+            });
+        }
+
+        let buffered = HttpResponse::from_reqwest(open_response)
+            .await
+            .map_err(|e| persist_on_error(&state, e))?;
+        let open_tx_hash = apply_response_receipt(&buffered, &mut state, "open response")
+            .map_err(|e| persist_on_error(&state, e))?;
+        return Ok(OpenExecutionPlan {
+            state,
+            salt_hex,
+            open_tx_hash,
+            open_response: OpenResponse::Buffered(buffered),
+        });
+    }
+
     let channel_id = compute_channel_id(
         challenge.from,
         challenge.payee,
@@ -1428,6 +1855,9 @@ async fn open_stage(
         accepted_cumulative: 0,
         max_cumulative_spend: max_spend,
         server_spent: 0,
+        session_protocol: mpp::protocol::methods::tempo::session::SESSION_PROTOCOL_LEGACY
+            .to_string(),
+        descriptor: None,
     };
 
     validate_request_spend_limit(&state, challenge.network_id, state.cumulative_amount)?;
@@ -1662,8 +2092,18 @@ pub(crate) async fn handle_session_request(
                 response: None,
             })
         }
-        // Non-SSE: the open response already contains the proxied upstream
-        // result — use it directly instead of making a duplicate request.
+        // TIP-1034 open is a management POST. If the server returns a buffered
+        // success, persist the new channel and replay the original request with
+        // `Payment-Session` so the first CLI invocation returns content.
+        OpenResponse::Buffered(buffered)
+            if buffered.status_code < 400 && opened.state.is_tip1034() =>
+        {
+            request_stage(&ctx, &mut opened.state)
+                .await
+                .map(|result| result.payment)
+        }
+        // Legacy non-SSE: the open response already contains the proxied
+        // upstream result — use it directly instead of making a duplicate request.
         OpenResponse::Buffered(buffered) if buffered.status_code < 400 => {
             persist_session(&ctx, &opened.state)?;
             Ok(PaymentResult {
@@ -1711,15 +2151,19 @@ fn is_session_reusable(
 mod tests {
     use super::{
         apply_response_receipt, apply_response_receipt_from_headers, assess_on_chain_reusability,
-        challenge_channel_id_parse, classify_session_failure, invalidation_confirmed_on_chain,
-        is_on_chain_identity_match, is_session_reusable, normalize_hex_identifier,
-        parse_positive_problem_amount, session_reuse_persist_failed_error, session_store_error,
-        validate_problem_channel_id, SessionRequestFailureKind,
+        build_snapshot_reuse_record, challenge_channel_id_parse, classify_session_failure,
+        invalidation_confirmed_on_chain, is_on_chain_identity_match, is_session_reusable,
+        normalize_hex_identifier, parse_positive_problem_amount,
+        session_reuse_persist_failed_error, session_store_error, validate_problem_channel_id,
+        ResolvedSessionChallenge, SessionRequestFailureKind,
     };
     use crate::http::HttpResponse;
     use alloy::primitives::{Address, B256};
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-    use mpp::protocol::methods::tempo::SessionReceipt;
+    use mpp::protocol::methods::tempo::{
+        session::{SessionSnapshot, SESSION_PROTOCOL_TIP1034},
+        SessionReceipt,
+    };
     use tempo_common::{
         error::{PaymentError, TempoError},
         payment::{
@@ -1742,6 +2186,9 @@ mod tests {
             authorized_signer: Address::ZERO,
             salt: "0x00".into(),
             channel_id: alloy::primitives::B256::ZERO,
+            session_protocol: mpp::protocol::methods::tempo::session::SESSION_PROTOCOL_LEGACY
+                .to_string(),
+            descriptor_json: None,
             deposit: 1_000_000,
             cumulative_amount: 500,
             accepted_cumulative: 0,
@@ -1758,6 +2205,86 @@ mod tests {
     fn encode_receipt_header(receipt: &SessionReceipt) -> String {
         let json = serde_json::to_vec(receipt).unwrap();
         URL_SAFE_NO_PAD.encode(json)
+    }
+
+    fn test_echo() -> mpp::ChallengeEcho {
+        mpp::ChallengeEcho {
+            id: "test-challenge".to_string(),
+            realm: "test".to_string(),
+            method: mpp::protocol::core::MethodName::from("tempo"),
+            intent: mpp::protocol::core::IntentName::from("session"),
+            request: mpp::Base64UrlJson::from_raw("e30"),
+            expires: None,
+            digest: None,
+            opaque: None,
+        }
+    }
+
+    fn tip1034_challenge() -> ResolvedSessionChallenge {
+        let from = Address::from([0x11; 20]);
+        let payee = Address::from([0x22; 20]);
+        let token = Address::from([0x33; 20]);
+        let operator = Address::from([0x44; 20]);
+        let key_address = Address::from([0x55; 20]);
+        ResolvedSessionChallenge {
+            network_id: tempo_common::network::NetworkId::TempoModerato,
+            chain_id: 42431,
+            amount: 25,
+            suggested_deposit: Some(1_000),
+            escrow_contract: Address::new([
+                0x4d, 0x50, 0x50, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            ]),
+            token,
+            payee,
+            fee_payer: false,
+            suggested_channel_id: None,
+            session_protocol: SESSION_PROTOCOL_TIP1034.to_string(),
+            operator: Some(operator),
+            session_snapshot: None,
+            echo: test_echo(),
+            origin: "https://example.test".to_string(),
+            session_key: "https://example.test".to_string(),
+            from,
+            key_address,
+            did: format!("did:pkh:eip155:42431:{from:#x}"),
+            payer_hex: format!("{from:#x}"),
+            payee_hex: format!("{payee:#x}"),
+            token_hex: format!("{token:#x}"),
+        }
+    }
+
+    fn tip1034_snapshot(challenge: &ResolvedSessionChallenge) -> SessionSnapshot {
+        let salt = B256::from([0x66; 32]);
+        let descriptor = mpp::client::tempo::session::channel_ops::build_channel_descriptor(
+            challenge.from,
+            challenge.payee,
+            challenge.operator.unwrap(),
+            challenge.token,
+            salt,
+            challenge.key_address,
+            B256::from([0x77; 32]),
+        );
+        let channel_id =
+            mpp::client::tempo::session::channel_ops::compute_precompile_channel_id_from_descriptor_with_escrow(
+                &descriptor,
+                challenge.escrow_contract,
+                challenge.chain_id,
+            )
+            .unwrap();
+        SessionSnapshot {
+            accepted_cumulative: "100".to_string(),
+            chain_id: challenge.chain_id,
+            channel_id: format!("{channel_id:#x}"),
+            deposit: "1000".to_string(),
+            descriptor,
+            escrow: format!("{:#x}", challenge.escrow_contract),
+            required_cumulative: "125".to_string(),
+            settled: "80".to_string(),
+            spent: "90".to_string(),
+            close_requested_at: None,
+            units: Some(1),
+        }
     }
 
     #[test]
@@ -1875,6 +2402,74 @@ mod tests {
             4217,
             Address::ZERO,
         ));
+    }
+
+    #[test]
+    fn snapshot_hydration_builds_tip1034_reuse_record() {
+        let challenge = tip1034_challenge();
+        let snapshot = tip1034_snapshot(&challenge);
+        let record =
+            build_snapshot_reuse_record(&challenge, "https://example.test/data", &snapshot)
+                .unwrap()
+                .unwrap();
+
+        assert_eq!(record.session_protocol, SESSION_PROTOCOL_TIP1034);
+        assert_eq!(record.origin, challenge.origin);
+        assert_eq!(record.token, challenge.token_hex);
+        assert_eq!(record.payee, challenge.payee_hex);
+        assert_eq!(record.payer, challenge.payer_hex);
+        assert_eq!(record.authorized_signer, challenge.key_address);
+        assert_eq!(record.deposit, 1000);
+        assert_eq!(record.cumulative_amount, 100);
+        assert_eq!(record.accepted_cumulative, 100);
+        assert_eq!(record.server_spent, 90);
+        assert_eq!(record.descriptor().unwrap(), snapshot.descriptor);
+    }
+
+    #[test]
+    fn snapshot_hydration_rejects_channel_id_mismatch() {
+        let challenge = tip1034_challenge();
+        let mut snapshot = tip1034_snapshot(&challenge);
+        snapshot.channel_id = format!("{:#x}", B256::from([0xaa; 32]));
+
+        let err = build_snapshot_reuse_record(&challenge, "https://example.test/data", &snapshot)
+            .unwrap_err();
+        assert!(err.to_string().contains("channelId mismatch"));
+    }
+
+    #[test]
+    fn snapshot_hydration_rejects_chain_id_mismatch() {
+        let challenge = tip1034_challenge();
+        let mut snapshot = tip1034_snapshot(&challenge);
+        snapshot.chain_id = 1;
+
+        let err = build_snapshot_reuse_record(&challenge, "https://example.test/data", &snapshot)
+            .unwrap_err();
+        assert!(err.to_string().contains("chainId mismatch"));
+    }
+
+    #[test]
+    fn snapshot_hydration_rejects_escrow_mismatch() {
+        let challenge = tip1034_challenge();
+        let mut snapshot = tip1034_snapshot(&challenge);
+        snapshot.escrow = format!("{:#x}", Address::from([0xaa; 20]));
+
+        let err = build_snapshot_reuse_record(&challenge, "https://example.test/data", &snapshot)
+            .unwrap_err();
+        assert!(err.to_string().contains("escrow mismatch"));
+    }
+
+    #[test]
+    fn snapshot_hydration_rejects_required_cumulative_mismatch() {
+        let challenge = tip1034_challenge();
+        let mut snapshot = tip1034_snapshot(&challenge);
+        snapshot.required_cumulative = "10000".to_string();
+
+        let err = build_snapshot_reuse_record(&challenge, "https://example.test/data", &snapshot)
+            .unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("accepted cumulative plus request amount"));
     }
 
     #[test]
@@ -2087,6 +2682,9 @@ mod tests {
             accepted_cumulative: 0,
             max_cumulative_spend: None,
             server_spent: 0,
+            session_protocol: mpp::protocol::methods::tempo::session::SESSION_PROTOCOL_LEGACY
+                .to_string(),
+            descriptor: None,
         };
         let tx = apply_response_receipt(&response, &mut state, "session response").unwrap();
         assert_eq!(
@@ -2109,6 +2707,9 @@ mod tests {
             accepted_cumulative: 0,
             max_cumulative_spend: None,
             server_spent: 0,
+            session_protocol: mpp::protocol::methods::tempo::session::SESSION_PROTOCOL_LEGACY
+                .to_string(),
+            descriptor: None,
         };
 
         let missing = HttpResponse::for_test(200, b"ok");
@@ -2162,6 +2763,9 @@ mod tests {
             accepted_cumulative: 20,
             max_cumulative_spend: None,
             server_spent: 10,
+            session_protocol: mpp::protocol::methods::tempo::session::SESSION_PROTOCOL_LEGACY
+                .to_string(),
+            descriptor: None,
         };
 
         let result = apply_response_receipt(&response, &mut state, "session response");
@@ -2202,6 +2806,9 @@ mod tests {
             accepted_cumulative: 20,
             max_cumulative_spend: None,
             server_spent: 10,
+            session_protocol: mpp::protocol::methods::tempo::session::SESSION_PROTOCOL_LEGACY
+                .to_string(),
+            descriptor: None,
         };
 
         let tx_ref =
@@ -2244,6 +2851,9 @@ mod tests {
             accepted_cumulative: 20,
             max_cumulative_spend: None,
             server_spent: 10,
+            session_protocol: mpp::protocol::methods::tempo::session::SESSION_PROTOCOL_LEGACY
+                .to_string(),
+            descriptor: None,
         };
 
         let err = apply_response_receipt_from_headers(&response, &mut state, "open response", true)
@@ -2307,6 +2917,9 @@ mod tests {
             accepted_cumulative: 20,
             max_cumulative_spend: None,
             server_spent: 10,
+            session_protocol: mpp::protocol::methods::tempo::session::SESSION_PROTOCOL_LEGACY
+                .to_string(),
+            descriptor: None,
         };
 
         let err = apply_response_receipt_from_headers(&response, &mut state, "open response", true)

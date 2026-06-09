@@ -96,6 +96,8 @@ fn open_db_at(path: &Path) -> ChannelStoreResult<rusqlite::Connection> {
             payer              TEXT NOT NULL,
             authorized_signer  TEXT NOT NULL,
             salt               TEXT NOT NULL,
+            session_protocol   TEXT NOT NULL DEFAULT 'v1',
+            descriptor_json    TEXT,
             deposit            TEXT NOT NULL,
             cumulative_amount  TEXT NOT NULL,
             challenge_echo     TEXT NOT NULL,
@@ -125,6 +127,20 @@ fn open_db_at(path: &Path) -> ChannelStoreResult<rusqlite::Connection> {
         Ok(()) => {}
         Err(e) if e.to_string().contains("duplicate column name") => {}
         Err(e) => return Err(store_error("migrate channels schema (server_spent)", e)),
+    }
+
+    match conn.execute_batch(
+        "ALTER TABLE channels ADD COLUMN session_protocol TEXT NOT NULL DEFAULT 'v1';",
+    ) {
+        Ok(()) => {}
+        Err(e) if e.to_string().contains("duplicate column name") => {}
+        Err(e) => return Err(store_error("migrate channels schema (session_protocol)", e)),
+    }
+
+    match conn.execute_batch("ALTER TABLE channels ADD COLUMN descriptor_json TEXT;") {
+        Ok(()) => {}
+        Err(e) if e.to_string().contains("duplicate column name") => {}
+        Err(e) => return Err(store_error("migrate channels schema (descriptor_json)", e)),
     }
 
     Ok(conn)
@@ -191,7 +207,7 @@ fn decode_channel_status(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Res
 }
 
 fn map_channel_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ChannelRecord> {
-    let state = decode_channel_status(row, 15)?;
+    let state = decode_channel_status(row, 17)?;
 
     let mut record = ChannelRecord {
         version: row.get::<_, u32>(0)?,
@@ -207,16 +223,18 @@ fn map_channel_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ChannelRecord> {
         channel_id: row.get::<_, String>(10)?.parse().map_err(|source| {
             rusqlite::Error::FromSqlConversionFailure(10, Type::Text, Box::new(source))
         })?,
-        deposit: decode_u128_column(row, 11, "deposit")?,
-        cumulative_amount: decode_u128_column(row, 12, "cumulative_amount")?,
-        accepted_cumulative: decode_u128_column(row, 13, "accepted_cumulative")?,
-        challenge_echo: row.get(14)?,
+        session_protocol: row.get(11)?,
+        descriptor_json: row.get(12)?,
+        deposit: decode_u128_column(row, 13, "deposit")?,
+        cumulative_amount: decode_u128_column(row, 14, "cumulative_amount")?,
+        accepted_cumulative: decode_u128_column(row, 15, "accepted_cumulative")?,
+        challenge_echo: row.get(16)?,
         state,
-        close_requested_at: decode_u64_column(row, 16, "close_requested_at")?,
-        grace_ready_at: decode_u64_column(row, 17, "grace_ready_at")?,
-        created_at: decode_u64_column(row, 18, "created_at")?,
-        last_used_at: decode_u64_column(row, 19, "last_used_at")?,
-        server_spent: decode_u128_column(row, 20, "server_spent")?,
+        close_requested_at: decode_u64_column(row, 18, "close_requested_at")?,
+        grace_ready_at: decode_u64_column(row, 19, "grace_ready_at")?,
+        created_at: decode_u64_column(row, 20, "created_at")?,
+        last_used_at: decode_u64_column(row, 21, "last_used_at")?,
+        server_spent: decode_u128_column(row, 22, "server_spent")?,
     };
 
     if !record.normalize_persisted_identity() {
@@ -256,10 +274,10 @@ fn save_channel_in_conn(
         "INSERT INTO channels (
             channel_id, version, origin, request_url, chain_id,
             escrow_contract, token, payee, payer, authorized_signer,
-            salt, deposit, cumulative_amount, accepted_cumulative, challenge_echo,
+            salt, session_protocol, descriptor_json, deposit, cumulative_amount, accepted_cumulative, challenge_echo,
             state, close_requested_at, grace_ready_at, created_at, last_used_at,
             server_spent
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)
         ON CONFLICT(channel_id) DO UPDATE SET
             version = excluded.version,
             origin = excluded.origin,
@@ -271,6 +289,8 @@ fn save_channel_in_conn(
             payer = excluded.payer,
             authorized_signer = excluded.authorized_signer,
             salt = excluded.salt,
+            session_protocol = excluded.session_protocol,
+            descriptor_json = excluded.descriptor_json,
             deposit = CASE
                 WHEN LENGTH(channels.deposit) > LENGTH(excluded.deposit) THEN channels.deposit
                 WHEN LENGTH(channels.deposit) < LENGTH(excluded.deposit) THEN excluded.deposit
@@ -308,6 +328,8 @@ fn save_channel_in_conn(
             record.payer,
             format!("{:#x}", record.authorized_signer),
             record.salt,
+            record.session_protocol_or_legacy(),
+            record.descriptor_json.as_deref(),
             record.deposit.to_string(),
             record.cumulative_amount.to_string(),
             record.accepted_cumulative.to_string(),
@@ -332,7 +354,7 @@ fn load_channel_in_conn(
         .prepare(
             "SELECT version, origin, request_url, chain_id,
                     escrow_contract, token, payee, payer, authorized_signer,
-                    salt, channel_id, deposit, cumulative_amount, accepted_cumulative,
+                    salt, channel_id, session_protocol, descriptor_json, deposit, cumulative_amount, accepted_cumulative,
                     challenge_echo, state, close_requested_at, grace_ready_at, created_at, last_used_at,
                     server_spent
              FROM channels WHERE LOWER(channel_id) = LOWER(?1)",
@@ -365,7 +387,7 @@ fn find_reusable_channel_in_conn(
         .prepare(
             "SELECT version, origin, request_url, chain_id,
                     escrow_contract, token, payee, payer, authorized_signer,
-                    salt, channel_id, deposit, cumulative_amount, accepted_cumulative,
+                    salt, channel_id, session_protocol, descriptor_json, deposit, cumulative_amount, accepted_cumulative,
                     challenge_echo, state, close_requested_at, grace_ready_at, created_at, last_used_at,
                     server_spent
              FROM channels
@@ -459,7 +481,7 @@ pub fn load_channels_by_origin(origin: &str) -> ChannelStoreResult<Vec<ChannelRe
         .prepare(
             "SELECT version, origin, request_url, chain_id,
                     escrow_contract, token, payee, payer, authorized_signer,
-                    salt, channel_id, deposit, cumulative_amount, accepted_cumulative,
+                    salt, channel_id, session_protocol, descriptor_json, deposit, cumulative_amount, accepted_cumulative,
                     challenge_echo, state, close_requested_at, grace_ready_at, created_at, last_used_at,
                     server_spent
              FROM channels WHERE origin = ?1 ORDER BY last_used_at DESC",
@@ -522,7 +544,7 @@ pub fn list_channels() -> ChannelStoreResult<Vec<ChannelRecord>> {
         .prepare(
             "SELECT version, origin, request_url, chain_id,
                     escrow_contract, token, payee, payer, authorized_signer,
-                    salt, channel_id, deposit, cumulative_amount, accepted_cumulative,
+                    salt, channel_id, session_protocol, descriptor_json, deposit, cumulative_amount, accepted_cumulative,
                     challenge_echo, state, close_requested_at, grace_ready_at, created_at, last_used_at,
                     server_spent
              FROM channels
@@ -605,6 +627,9 @@ mod tests {
                 .unwrap(),
             salt: "0x01".to_string(),
             channel_id,
+            session_protocol: mpp::protocol::methods::tempo::session::SESSION_PROTOCOL_LEGACY
+                .to_string(),
+            descriptor_json: None,
             deposit: 1_000,
             cumulative_amount: 10,
             accepted_cumulative: 0,

@@ -251,6 +251,9 @@ mod tests {
             accepted_cumulative: 10,
             max_cumulative_spend: None,
             server_spent: 5,
+            session_protocol: mpp::protocol::methods::tempo::session::SESSION_PROTOCOL_LEGACY
+                .to_string(),
+            descriptor: None,
         }
     }
 

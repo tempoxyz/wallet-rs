@@ -11,7 +11,7 @@ pub use onchain::{close_channel_by_id, close_discovered_channel};
 
 use alloy::primitives::{Address, B256};
 
-use mpp::ChallengeEcho;
+use mpp::{protocol::methods::tempo::session::ChannelDescriptor, ChallengeEcho};
 use url::Url;
 
 use super::store;
@@ -38,10 +38,15 @@ async fn channel_closed_on_chain(
     network_id: crate::network::NetworkId,
     escrow_contract: Address,
     channel_id: B256,
+    descriptor: Option<&ChannelDescriptor>,
 ) -> ChannelResult<bool> {
     let provider = alloy::providers::RootProvider::new_http(config.rpc_url(network_id));
-    let on_chain =
-        super::channel::get_channel_on_chain(&provider, escrow_contract, channel_id).await?;
+    let on_chain = if let Some(descriptor) = descriptor {
+        super::channel::get_precompile_channel_on_chain(&provider, escrow_contract, descriptor)
+            .await?
+    } else {
+        super::channel::get_channel_on_chain(&provider, escrow_contract, channel_id).await?
+    };
     Ok(on_chain.is_none())
 }
 
@@ -111,6 +116,23 @@ pub async fn close_channel_from_record(
     let channel_id: B256 = record.channel_id;
 
     let escrow_contract: Address = record.escrow_contract;
+    let descriptor = if record.session_protocol_or_legacy()
+        == mpp::protocol::methods::tempo::session::SESSION_PROTOCOL_TIP1034
+    {
+        Some(
+            record
+                .descriptor()
+                .ok_or_else(|| PaymentError::ChannelPersistenceSource {
+                    operation: "parse TIP-1034 channel descriptor",
+                    source: Box::new(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "missing or malformed descriptor_json",
+                    )),
+                })?,
+        )
+    } else {
+        None
+    };
 
     // Prefer the server-reported actual spend for the close voucher to avoid
     // overcharging. Falls back to accepted_cumulative when spend is unknown.
@@ -174,8 +196,14 @@ pub async fn close_channel_from_record(
             // "pending then closed" UX on immediate retries.
             if should_reconcile_after_coop_failure(coop_err) {
                 for attempt in 0..2 {
-                    if channel_closed_on_chain(config, network_id, escrow_contract, channel_id)
-                        .await?
+                    if channel_closed_on_chain(
+                        config,
+                        network_id,
+                        escrow_contract,
+                        channel_id,
+                        descriptor.as_ref(),
+                    )
+                    .await?
                     {
                         let amount_display = Some(format_token_amount(close_amount, network_id));
                         return Ok(CloseOutcome::Closed {
@@ -214,6 +242,7 @@ pub async fn close_channel_from_record(
         escrow_contract,
         record.chain_id,
         fee_token,
+        descriptor.as_ref(),
     )
     .await?;
 
@@ -327,6 +356,9 @@ mod tests {
             authorized_signer: Address::ZERO,
             salt: "0x00".to_string(),
             channel_id: B256::ZERO,
+            session_protocol: mpp::protocol::methods::tempo::session::SESSION_PROTOCOL_LEGACY
+                .to_string(),
+            descriptor_json: None,
             deposit: 0,
             cumulative_amount: 0,
             accepted_cumulative: 0,

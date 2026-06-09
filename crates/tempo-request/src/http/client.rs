@@ -300,17 +300,30 @@ impl HttpClient {
         url: &str,
         extra_headers: &[(String, String)],
     ) -> HttpResult<reqwest::Response> {
+        self.execute_raw_with_retry_inner(self.plan.method.clone(), url, extra_headers, true)
+            .await
+    }
+
+    async fn execute_raw_with_retry_inner(
+        &self,
+        method: reqwest::Method,
+        url: &str,
+        extra_headers: &[(String, String)],
+        include_body: bool,
+    ) -> HttpResult<reqwest::Response> {
         let plan = &self.plan;
         let mut attempt: u32 = 0;
         let mut backoff = plan.base_backoff_ms;
 
         loop {
             let result: HttpResult<reqwest::Response> = async {
-                let mut req = self.client.request(plan.method.clone(), url);
+                let mut req = self.client.request(method.clone(), url);
                 for (name, value) in extra_headers {
                     req = req.header(name.as_str(), value.as_str());
                 }
-                req = Self::apply_body(req, &plan.body);
+                if include_body {
+                    req = Self::apply_body(req, &plan.body);
+                }
                 let response = req.send().await.map_err(NetworkError::Reqwest)?;
                 Ok(response)
             }

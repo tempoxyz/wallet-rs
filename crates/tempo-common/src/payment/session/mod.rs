@@ -42,6 +42,7 @@ pub use close::{
 
 // Re-export public API from `tx`
 pub use tx::{
-    build_open_calls, build_top_up_calls, resolve_and_sign_tx, resolve_and_sign_tx_with_fee_payer,
-    submit_tempo_tx,
+    build_open_calls, build_tip1034_open_calls, build_tip1034_top_up_calls, build_top_up_calls,
+    resolve_and_sign_tx, resolve_and_sign_tx_with_fee_payer,
+    resolve_and_sign_tx_with_fee_payer_info, submit_tempo_tx, SignedTempoTx,
 };
