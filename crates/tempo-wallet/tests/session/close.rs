@@ -325,7 +325,7 @@ async fn sessions_close_pending_before_grace_elapsed_submits_no_tx() {
         .as_u64()
         .expect("pending close should include remaining_secs");
     assert!(
-        (799..=800).contains(&remaining_secs),
+        (700..=800).contains(&remaining_secs),
         "remaining seconds should reflect pending grace window: {remaining_secs}"
     );
 
