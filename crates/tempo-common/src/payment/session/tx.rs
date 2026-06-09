@@ -91,6 +91,14 @@ fn classify_tx_error(err: &impl std::fmt::Display) -> Option<TempoError> {
     classify_tempo_rpc_error(err.to_string())
 }
 
+fn session_management_tx_fee_token(fee_token: Address, fee_payer: bool) -> Address {
+    if fee_payer {
+        Address::ZERO
+    } else {
+        fee_token
+    }
+}
+
 /// Estimate gas, build and sign a Tempo type-0x76 transaction.
 ///
 /// Uses expiring nonces (nonceKey=MAX, nonce=0) and static gas fees
@@ -225,11 +233,12 @@ pub async fn resolve_and_sign_tx_with_fee_payer_info(
         }
     };
     let gas_limit = session_management_gas_limit(estimated_gas_limit, fee_payer);
+    let tx_fee_token = session_management_tx_fee_token(fee_token, fee_payer);
 
     let tx = tx_builder::build_tempo_tx(tx_builder::TempoTxOptions {
         calls,
         chain_id,
-        fee_token,
+        fee_token: tx_fee_token,
         nonce,
         nonce_key: EXPIRING_NONCE_KEY,
         gas_limit,
@@ -514,6 +523,34 @@ mod tests {
         assert_eq!(session_management_gas_limit(329_438, true), 800_000);
         assert_eq!(session_management_gas_limit(1_200_000, true), 1_200_000);
         assert_eq!(session_management_gas_limit(329_438, false), 329_438);
+    }
+
+    #[test]
+    fn test_fee_payer_tempo_tx_is_fee_tokenless() {
+        let real_fee_token = Address::from([0x99; 20]);
+        let tx_fee_token = session_management_tx_fee_token(real_fee_token, true);
+        assert_eq!(tx_fee_token, Address::ZERO);
+        assert_eq!(
+            session_management_tx_fee_token(real_fee_token, false),
+            real_fee_token
+        );
+
+        let tx = tx_builder::build_tempo_tx(tx_builder::TempoTxOptions {
+            calls: Vec::new(),
+            chain_id: 42431,
+            fee_token: tx_fee_token,
+            nonce: 0,
+            nonce_key: EXPIRING_NONCE_KEY,
+            gas_limit: 800_000,
+            max_fee_per_gas: MAX_FEE_PER_GAS,
+            max_priority_fee_per_gas: MAX_PRIORITY_FEE_PER_GAS,
+            fee_payer: true,
+            valid_before: Some(123),
+            key_authorization: None,
+        });
+
+        assert!(tx.fee_token.is_none());
+        assert!(tx.fee_payer_signature.is_some());
     }
 
     #[test]

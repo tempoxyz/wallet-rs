@@ -1741,9 +1741,24 @@ async fn open_stage(
 
         validate_request_spend_limit(&state, challenge.network_id, state.cumulative_amount)?;
         let salt_hex = format!("{salt:#x}");
+        let persist_on_error = |state: &ChannelState, e: TempoError| -> TempoError {
+            let ctx = build_channel_context(
+                signer,
+                http,
+                url,
+                resolved.rpc_url.as_str(),
+                challenge,
+                deposit,
+                salt_hex.clone(),
+            );
+            let _ = persist_session(&ctx, state);
+            e
+        };
+
         let open_response =
             open::send_open_with_retry(http, url, &auth_header, &open_idempotency_key, &delays)
-                .await?;
+                .await
+                .map_err(|e| persist_on_error(&state, e))?;
 
         let is_sse = open_response
             .headers()
@@ -1758,7 +1773,8 @@ async fn open_stage(
                 &mut state,
                 "open response",
                 false,
-            )?;
+            )
+            .map_err(|e| persist_on_error(&state, e))?;
             return Ok(OpenExecutionPlan {
                 state,
                 salt_hex,
@@ -1770,8 +1786,11 @@ async fn open_stage(
             });
         }
 
-        let buffered = HttpResponse::from_reqwest(open_response).await?;
-        let open_tx_hash = apply_response_receipt(&buffered, &mut state, "open response")?;
+        let buffered = HttpResponse::from_reqwest(open_response)
+            .await
+            .map_err(|e| persist_on_error(&state, e))?;
+        let open_tx_hash = apply_response_receipt(&buffered, &mut state, "open response")
+            .map_err(|e| persist_on_error(&state, e))?;
         return Ok(OpenExecutionPlan {
             state,
             salt_hex,

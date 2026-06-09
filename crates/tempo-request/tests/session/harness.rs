@@ -26,6 +26,8 @@ use tempo_common::network::TEMPO_MODERATO_ESCROW;
 pub(crate) const MODERATO_TOKEN: &str = "0x20c0000000000000000000000000000000000000";
 pub(crate) const PAYEE_A: &str = "0x1111111111111111111111111111111111111111";
 pub(crate) const PAYEE_B: &str = "0x2222222222222222222222222222222222222222";
+const TIP1034_OPERATOR: &str = "0x3333333333333333333333333333333333333333";
+const TIP1034_RESERVE_ADDRESS: &str = "0x4d50500000000000000000000000000000000000";
 pub(crate) const SESSION_AMOUNT: u128 = 1_000_000;
 
 fn challenge_amount_for_path(path: &str) -> u128 {
@@ -43,6 +45,8 @@ pub(crate) struct StoredChannel {
     pub(crate) channel_id: String,
     pub(crate) payee: String,
     pub(crate) state: String,
+    pub(crate) session_protocol: String,
+    pub(crate) descriptor_json: Option<String>,
     pub(crate) deposit: u128,
     pub(crate) cumulative_amount: u128,
 }
@@ -484,9 +488,20 @@ async fn session_handler(
         } else {
             "recipient"
         };
+        let is_tip1034 = path.contains("tip1034");
+        let escrow_contract = if is_tip1034 {
+            TIP1034_RESERVE_ADDRESS.to_string()
+        } else {
+            TEMPO_MODERATO_ESCROW.to_string()
+        };
         let mut method_details = serde_json::json!({
-            "escrowContract": TEMPO_MODERATO_ESCROW.to_string(),
+            "escrowContract": escrow_contract,
         });
+        if is_tip1034 {
+            method_details["sessionProtocol"] =
+                serde_json::json!(mpp::protocol::methods::tempo::session::SESSION_PROTOCOL_TIP1034);
+            method_details["operator"] = serde_json::json!(TIP1034_OPERATOR);
+        }
         if !path.contains("missing-chain-id") {
             method_details["chainId"] = serde_json::json!(42431);
         }
@@ -582,6 +597,13 @@ async fn session_handler(
                 if let Some(keys) = payload_keys.clone() {
                     observations.open_payload_keys.push(keys);
                 }
+            }
+
+            if path.contains("open-error") {
+                return Response::builder()
+                    .status(StatusCode::UNAUTHORIZED)
+                    .body(Body::from("upstream failed during open"))
+                    .unwrap();
             }
 
             let mut builder = Response::builder().status(StatusCode::OK);
@@ -1021,7 +1043,7 @@ pub(crate) fn load_channels(temp: &tempfile::TempDir) -> Vec<StoredChannel> {
     let conn = Connection::open(db_path).unwrap();
     let mut stmt = conn
         .prepare(
-            "SELECT channel_id, payee, state, deposit, cumulative_amount
+            "SELECT channel_id, payee, state, session_protocol, descriptor_json, deposit, cumulative_amount
              FROM channels
              ORDER BY created_at ASC",
         )
@@ -1029,12 +1051,14 @@ pub(crate) fn load_channels(temp: &tempfile::TempDir) -> Vec<StoredChannel> {
 
     let rows = stmt
         .query_map([], |row| {
-            let deposit_raw: String = row.get(3)?;
-            let cumulative_raw: String = row.get(4)?;
+            let deposit_raw: String = row.get(5)?;
+            let cumulative_raw: String = row.get(6)?;
             Ok(StoredChannel {
                 channel_id: row.get(0)?,
                 payee: row.get(1)?,
                 state: row.get(2)?,
+                session_protocol: row.get(3)?,
+                descriptor_json: row.get(4)?,
                 deposit: deposit_raw.parse::<u128>().unwrap_or_default(),
                 cumulative_amount: cumulative_raw.parse::<u128>().unwrap_or_default(),
             })
