@@ -4,6 +4,7 @@ use alloy::{
     primitives::{Address, Bytes, TxKind, B256, U256},
     sol_types::SolCall,
 };
+use mpp::protocol::methods::tempo::session::ChannelDescriptor;
 use tempo_primitives::transaction::Call;
 
 use super::{
@@ -11,7 +12,7 @@ use super::{
         channel::{get_channel_on_chain, read_grace_period, IEscrow},
         store,
         store::ChannelStatus,
-        tx::submit_tempo_tx,
+        tx::{build_tip1034_request_close_calls, build_tip1034_withdraw_calls, submit_tempo_tx},
         DEFAULT_GRACE_PERIOD_SECS,
     },
     CloseOutcome,
@@ -73,6 +74,7 @@ pub(super) async fn close_on_chain(
     escrow_contract: Address,
     chain_id: u64,
     fee_token: Address,
+    descriptor: Option<&ChannelDescriptor>,
 ) -> ChannelResult<CloseOutcome> {
     let network_id = NetworkId::require_chain_id(chain_id)?;
     let rpc_url = config.rpc_url(network_id);
@@ -81,7 +83,17 @@ pub(super) async fn close_on_chain(
         alloy::providers::RootProvider::<mpp::client::TempoNetwork>::new_http(rpc_url);
 
     // Check current channel state to determine which step we're on
-    let Some(on_chain) = get_channel_on_chain(&provider, escrow_contract, channel_id).await? else {
+    let on_chain = if let Some(descriptor) = descriptor {
+        super::super::channel::get_precompile_channel_on_chain(
+            &provider,
+            escrow_contract,
+            descriptor,
+        )
+        .await?
+    } else {
+        get_channel_on_chain(&provider, escrow_contract, channel_id).await?
+    };
+    let Some(on_chain) = on_chain else {
         return Ok(CloseOutcome::Closed {
             tx_url: None,
             amount_display: None,
@@ -98,18 +110,22 @@ pub(super) async fn close_on_chain(
     match determine_close_step(on_chain.close_requested_at, grace_period, now) {
         // If closeRequestedAt is 0, we need to call requestClose() first
         CloseStep::RequestClose => {
-            let request_close_data = Bytes::from(
-                IEscrow::requestCloseCall {
-                    channelId: channel_id,
-                }
-                .abi_encode(),
-            );
+            let calls = if let Some(descriptor) = descriptor {
+                build_tip1034_request_close_calls(descriptor)?
+            } else {
+                let request_close_data = Bytes::from(
+                    IEscrow::requestCloseCall {
+                        channelId: channel_id,
+                    }
+                    .abi_encode(),
+                );
 
-            let calls = vec![Call {
-                to: TxKind::Call(escrow_contract),
-                value: U256::ZERO,
-                input: request_close_data,
-            }];
+                vec![Call {
+                    to: TxKind::Call(escrow_contract),
+                    value: U256::ZERO,
+                    input: request_close_data,
+                }]
+            };
 
             let tx_hash =
                 submit_tempo_tx(&tempo_provider, wallet, chain_id, fee_token, from, calls).await?;
@@ -151,18 +167,22 @@ pub(super) async fn close_on_chain(
     }
 
     // Grace period elapsed — submit withdraw() to reclaim deposit
-    let withdraw_data = Bytes::from(
-        IEscrow::withdrawCall {
-            channelId: channel_id,
-        }
-        .abi_encode(),
-    );
+    let calls = if let Some(descriptor) = descriptor {
+        build_tip1034_withdraw_calls(descriptor)?
+    } else {
+        let withdraw_data = Bytes::from(
+            IEscrow::withdrawCall {
+                channelId: channel_id,
+            }
+            .abi_encode(),
+        );
 
-    let calls = vec![Call {
-        to: TxKind::Call(escrow_contract),
-        value: U256::ZERO,
-        input: withdraw_data,
-    }];
+        vec![Call {
+            to: TxKind::Call(escrow_contract),
+            value: U256::ZERO,
+            input: withdraw_data,
+        }]
+    };
 
     let tx_hash =
         submit_tempo_tx(&tempo_provider, wallet, chain_id, fee_token, from, calls).await?;
@@ -209,6 +229,7 @@ pub async fn close_discovered_channel(
         channel.escrow_contract,
         network_id.chain_id(),
         channel.token,
+        None,
     )
     .await
 }
@@ -264,6 +285,7 @@ pub async fn close_channel_by_id(
         escrow,
         network.chain_id(),
         on_chain.token,
+        None,
     )
     .await
 }

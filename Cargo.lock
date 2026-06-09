@@ -3699,7 +3699,7 @@ dependencies = [
 [[package]]
 name = "mpp"
 version = "0.10.4"
-source = "git+https://github.com/tempoxyz/mpp-rs?rev=8ba76311d991965d745489bce63a8c819855158a#8ba76311d991965d745489bce63a8c819855158a"
+source = "git+https://github.com/tempoxyz/mpp-rs?rev=0d57f96ff670b290801b2ead9e0f1d637e0f2b3e#0d57f96ff670b290801b2ead9e0f1d637e0f2b3e"
 dependencies = [
  "alloy",
  "alloy-sol-type-parser",

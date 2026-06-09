@@ -127,6 +127,9 @@ fn persist_discovered_channel(
         authorized_signer: Address::ZERO,
         salt: "0x00".to_string(),
         channel_id: ch.channel_id,
+        session_protocol: mpp::protocol::methods::tempo::session::SESSION_PROTOCOL_LEGACY
+            .to_string(),
+        descriptor_json: None,
         deposit: ch.deposit,
         cumulative_amount: ch.settled,
         accepted_cumulative: ch.settled,
@@ -166,6 +169,9 @@ mod tests {
             channel_id: "0x0000000000000000000000000000000000000000000000000000000000000abc"
                 .parse()
                 .unwrap(),
+            session_protocol: mpp::protocol::methods::tempo::session::SESSION_PROTOCOL_LEGACY
+                .to_string(),
+            descriptor_json: None,
             deposit: 1_000_000,
             cumulative_amount: 2_000,
             accepted_cumulative: 0,

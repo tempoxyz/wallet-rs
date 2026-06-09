@@ -101,12 +101,24 @@ async fn send_top_up(
     additional_deposit: u128,
     idempotency_key: &str,
 ) -> Result<(), TempoError> {
-    let calls = tempo_common::session::build_top_up_calls(
-        ctx.token,
-        state.escrow_contract,
-        state.channel_id,
-        additional_deposit,
-    );
+    let calls = if state.is_tip1034() {
+        let descriptor =
+            state
+                .descriptor
+                .as_ref()
+                .ok_or_else(|| PaymentError::ChallengeSchema {
+                    context: "TIP-1034 topUp",
+                    reason: "missing channel descriptor".to_string(),
+                })?;
+        tempo_common::session::build_tip1034_top_up_calls(descriptor, additional_deposit)?
+    } else {
+        tempo_common::session::build_top_up_calls(
+            ctx.token,
+            state.escrow_contract,
+            state.channel_id,
+            additional_deposit,
+        )
+    };
     let payment = open::create_tempo_payment_from_calls(
         ctx.rpc_url,
         ctx.signer,
@@ -117,7 +129,12 @@ async fn send_top_up(
     )
     .await?;
     let tx_hex = format!("0x{}", hex::encode(&payment.tx_bytes));
-    let payload = build_top_up_payload(state.channel_id, tx_hex, additional_deposit);
+    let payload = build_top_up_payload(
+        state.channel_id,
+        tx_hex,
+        state.descriptor.clone(),
+        additional_deposit,
+    );
     let credential =
         mpp::PaymentCredential::with_source(ctx.echo.clone(), ctx.did.to_string(), payload);
     let auth = mpp::format_authorization(&credential).map_err(|source| {
@@ -678,6 +695,8 @@ fn post_voucher(
         accepted_cumulative: state.accepted_cumulative,
         max_cumulative_spend: state.max_cumulative_spend,
         server_spent: state.server_spent,
+        session_protocol: state.session_protocol.clone(),
+        descriptor: state.descriptor.clone(),
     };
 
     let client = client.clone();
@@ -1187,6 +1206,9 @@ mod tests {
             accepted_cumulative: 0,
             max_cumulative_spend: None,
             server_spent: 0,
+            session_protocol: mpp::protocol::methods::tempo::session::SESSION_PROTOCOL_LEGACY
+                .to_string(),
+            descriptor: None,
         }
     }
 

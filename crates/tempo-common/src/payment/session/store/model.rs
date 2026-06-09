@@ -1,6 +1,7 @@
 //! Domain model and helpers for persisted channel records.
 
 use alloy::primitives::{Address, B256};
+use mpp::protocol::methods::tempo::session::{ChannelDescriptor, SESSION_PROTOCOL_LEGACY};
 use serde::{Deserialize, Serialize};
 
 use crate::network::NetworkId;
@@ -79,6 +80,10 @@ pub struct ChannelRecord {
     pub authorized_signer: Address,
     pub salt: String,
     pub channel_id: B256,
+    #[serde(default = "default_session_protocol")]
+    pub session_protocol: String,
+    #[serde(default)]
+    pub descriptor_json: Option<String>,
     pub deposit: u128,
     pub cumulative_amount: u128,
     /// Server-confirmed accepted cumulative amount. Reflects the highest voucher
@@ -112,6 +117,10 @@ const fn default_state() -> ChannelStatus {
     ChannelStatus::Active
 }
 
+fn default_session_protocol() -> String {
+    SESSION_PROTOCOL_LEGACY.to_string()
+}
+
 #[must_use]
 pub fn now_secs() -> u64 {
     std::time::SystemTime::now()
@@ -143,6 +152,20 @@ impl ChannelRecord {
     #[must_use]
     pub fn channel_id_hex(&self) -> String {
         format!("{channel_id:#x}", channel_id = self.channel_id)
+    }
+
+    #[must_use]
+    pub fn session_protocol_or_legacy(&self) -> &str {
+        match self.session_protocol.as_str() {
+            "" | "legacy" => SESSION_PROTOCOL_LEGACY,
+            protocol => protocol,
+        }
+    }
+
+    pub fn descriptor(&self) -> Option<ChannelDescriptor> {
+        self.descriptor_json
+            .as_deref()
+            .and_then(|json| serde_json::from_str(json).ok())
     }
 
     /// The server-confirmed accepted amount.
@@ -274,6 +297,8 @@ mod tests {
             authorized_signer: Address::ZERO,
             salt: salt.into(),
             channel_id: B256::ZERO,
+            session_protocol: SESSION_PROTOCOL_LEGACY.to_string(),
+            descriptor_json: None,
             deposit: 1_000_000,
             cumulative_amount: 0,
             accepted_cumulative: 0,
@@ -293,6 +318,18 @@ mod tests {
         record.last_used_at = 1000;
         record.touch();
         assert!(record.last_used_at > 1000);
+    }
+
+    #[test]
+    fn test_session_protocol_or_legacy_returns_v1() {
+        let mut record = test_record("https://example.com", "salt");
+        assert_eq!(record.session_protocol_or_legacy(), SESSION_PROTOCOL_LEGACY);
+
+        record.session_protocol = String::new();
+        assert_eq!(record.session_protocol_or_legacy(), SESSION_PROTOCOL_LEGACY);
+
+        record.session_protocol = "legacy".to_string();
+        assert_eq!(record.session_protocol_or_legacy(), SESSION_PROTOCOL_LEGACY);
     }
 
     #[test]

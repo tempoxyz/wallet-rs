@@ -161,6 +161,7 @@ async fn cooperative_close_handler(
         channel_id,
         cumulative_amount,
         signature,
+        ..
     } = payload
     {
         observations.close_channel_id = Some(channel_id.clone());

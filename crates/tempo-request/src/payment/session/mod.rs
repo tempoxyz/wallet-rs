@@ -16,6 +16,7 @@ mod voucher;
 pub(super) use flow::handle_session_request;
 
 use alloy::primitives::{Address, B256};
+use mpp::protocol::methods::tempo::session::ChannelDescriptor;
 
 use crate::http::HttpClient;
 use tempo_common::{keys::Signer, network::NetworkId};
@@ -33,6 +34,14 @@ pub(super) struct ChannelState {
     /// Server-reported actual spend from `Payment-Receipt`. Used at close to
     /// avoid overcharging when the server reconciles below the voucher ceiling.
     pub(super) server_spent: u128,
+    pub(super) session_protocol: String,
+    pub(super) descriptor: Option<ChannelDescriptor>,
+}
+
+impl ChannelState {
+    pub(super) fn is_tip1034(&self) -> bool {
+        self.session_protocol == mpp::protocol::methods::tempo::session::SESSION_PROTOCOL_TIP1034
+    }
 }
 
 /// Shared context for session operations (streaming, closing).
