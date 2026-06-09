@@ -96,7 +96,7 @@ async fn error_after_payment_preserves_state_and_surfaces_dispute_message() {
         invalidating_problem_type_once: None,
         insufficient_balance_once: false,
         amount_exceeds_deposit_once: false,
-        error_after_payment_once_status: Some(500),
+        error_after_payment_once_status: Some(401),
         response_delay_ms: 0,
     })
     .await;
@@ -121,6 +121,10 @@ async fn error_after_payment_preserves_state_and_surfaces_dispute_message() {
     assert!(
         combined.contains("channel state preserved for on-chain dispute"),
         "error should surface preserved-state dispute message: {combined}"
+    );
+    assert!(
+        combined.contains("upstream failed after voucher authorization"),
+        "error should surface upstream response body: {combined}"
     );
 
     let observed = server.snapshot();
