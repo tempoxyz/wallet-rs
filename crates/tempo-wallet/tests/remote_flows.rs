@@ -776,7 +776,7 @@ async fn fund_no_browser_credits_waits_for_credit_balance_change() {
     )
     .await;
     let temp = build_fund_temp(&rpc.base_url);
-    let expected_url = format!("{}/?action=credits", rpc.base_url);
+    let expected_url = format!("{}/?action=fund&intent=credits", rpc.base_url);
 
     let output = test_command(&temp)
         .env("TEMPO_AUTH_URL", rpc.auth_url())
