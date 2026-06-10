@@ -336,6 +336,54 @@ async fn services_search_filter() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn services_search_filter_matches_credits_support() {
+    let mock = MockServicesServer::start().await;
+    let temp = TestConfigBuilder::new().build();
+
+    let output = test_command(&temp)
+        .env("TEMPO_SERVICES_URL", &mock.services_url)
+        .args(["-j", "services", "--search", "credits"])
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    let services = parsed.as_array().expect("services list should be an array");
+    assert_eq!(services.len(), 1);
+    assert_eq!(services[0]["supportsCredits"], true);
+}
+
+#[test]
+fn credits_transfer_dry_run_does_not_contact_auth_server() {
+    let temp = TestConfigBuilder::new()
+        .with_keys_toml(MODERATO_DIRECT_KEYS_TOML)
+        .build();
+
+    let output = test_command(&temp)
+        .env("TEMPO_AUTH_URL", "http://127.0.0.1:9")
+        .args([
+            "-j",
+            "transfer",
+            "--credits",
+            "--dry-run",
+            "--amount-cents",
+            "100",
+            "--to",
+            "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+        ])
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert_eq!(parsed["dry_run"], true);
+    assert_eq!(parsed["amount_cents"], 100);
+    assert!(parsed.get("tx_hash").is_none());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn services_info_not_found() {
     let mock = MockServicesServer::start().await;
     let temp = TestConfigBuilder::new().build();

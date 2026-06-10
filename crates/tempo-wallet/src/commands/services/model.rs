@@ -18,6 +18,8 @@ pub(super) struct Service {
     pub(super) url: String,
     #[serde(default, rename = "serviceUrl")]
     pub(super) service_url: Option<String>,
+    #[serde(default, rename = "supportsCredits")]
+    pub(super) supports_credits: bool,
     #[serde(default)]
     pub(super) description: Option<String>,
     #[serde(default)]
@@ -305,6 +307,7 @@ mod tests {
                 name: "n".to_string(),
                 url: "u".to_string(),
                 service_url: None,
+                supports_credits: false,
                 description: None,
                 icon: None,
                 categories: Vec::new(),

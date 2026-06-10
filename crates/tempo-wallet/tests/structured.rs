@@ -106,6 +106,7 @@ async fn services_json_and_toon_shapes() {
     let json_info: Value = serde_json::from_str(String::from_utf8_lossy(&out_json.stdout).trim())
         .expect("valid services info json");
     assert_eq!(json_info["id"], "openai");
+    assert_eq!(json_info["supportsCredits"], true);
 
     let mut cmd = test_command(&temp);
     let out_toon = cmd
@@ -119,6 +120,7 @@ async fn services_json_and_toon_shapes() {
         toon_format::decode_default(String::from_utf8_lossy(&out_toon.stdout).trim())
             .expect("valid services info toon");
     assert_eq!(toon_info["id"], "openai");
+    assert_eq!(toon_info["supportsCredits"], true);
 }
 
 #[test]

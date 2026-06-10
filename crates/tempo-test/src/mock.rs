@@ -692,6 +692,7 @@ impl MockServicesServer {
                     "name": "OpenAI",
                     "url": "https://openrouter.mpp.tempo.xyz",
                     "serviceUrl": "https://openrouter.mpp.tempo.xyz/v1/chat/completions",
+                    "supportsCredits": true,
                     "description": "LLM API",
                     "categories": ["ai"],
                     "methods": {"tempo": {"intents": ["charge"]}}

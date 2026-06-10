@@ -65,7 +65,14 @@ struct RedeemResponse {
 struct SpendCreditsResult {
     wallet: String,
     amount_cents: u64,
-    tx_hash: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tx_hash: Option<String>,
+    #[serde(skip_serializing_if = "is_false")]
+    dry_run: bool,
+}
+
+const fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 struct SubmitRedeemParams<'a> {
@@ -85,10 +92,11 @@ pub(crate) async fn run(
     data: String,
     value: String,
     address: Option<String>,
+    dry_run: bool,
 ) -> Result<(), TempoError> {
     let transaction_data = build_transaction_data(&to, &data, &value)?;
 
-    run_with_transaction_data(ctx, amount_cents, transaction_data, address).await
+    run_with_transaction_data(ctx, amount_cents, transaction_data, address, dry_run).await
 }
 
 pub(crate) async fn run_mpp(
@@ -96,6 +104,7 @@ pub(crate) async fn run_mpp(
     challenge: String,
     client_id: Option<String>,
     address: Option<String>,
+    dry_run: bool,
 ) -> Result<(), TempoError> {
     let challenge = parse_mpp_challenge(&challenge)?;
     let mpp_transaction = build_mpp_transaction(&challenge, client_id.as_deref(), ctx)?;
@@ -112,6 +121,7 @@ pub(crate) async fn run_mpp(
         mpp_transaction.amount_cents,
         mpp_transaction.transaction_data,
         address,
+        dry_run,
     )
     .await
 }
@@ -121,12 +131,13 @@ pub(crate) async fn run_mpp_file(
     challenge_path: &Path,
     client_id: Option<String>,
     address: Option<String>,
+    dry_run: bool,
 ) -> Result<(), TempoError> {
     let challenge = fs::read_to_string(challenge_path).map_err(|source| InputError::ReadFile {
         path: challenge_path.display().to_string(),
         source,
     })?;
-    run_mpp(ctx, challenge, client_id, address).await
+    run_mpp(ctx, challenge, client_id, address, dry_run).await
 }
 
 async fn run_with_transaction_data(
@@ -134,11 +145,25 @@ async fn run_with_transaction_data(
     amount_cents: u64,
     transaction_data: serde_json::Value,
     address: Option<String>,
+    dry_run: bool,
 ) -> Result<(), TempoError> {
     let auth_server_url =
         std::env::var("TEMPO_AUTH_URL").unwrap_or_else(|_| ctx.network.auth_url().to_string());
     let wallet = fund::resolve_address(address, &ctx.keys)?;
     let wallet_address = tempo_common::security::parse_address_input(&wallet, "wallet address")?;
+
+    if dry_run {
+        if ctx.output_format == OutputFormat::Text {
+            eprintln!("[DRY RUN] Credits redeem transaction ready, skipping authorization and submission.");
+        }
+        return SpendCreditsResult {
+            wallet,
+            amount_cents,
+            tx_hash: None,
+            dry_run: true,
+        }
+        .render(ctx.output_format);
+    }
 
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(30))
@@ -209,10 +234,13 @@ async fn run_with_transaction_data(
         }
     };
 
+    let tx_hash = redeem_resp.hash;
+
     let result = SpendCreditsResult {
         wallet,
         amount_cents,
-        tx_hash: redeem_resp.hash,
+        tx_hash: Some(tx_hash),
+        dry_run: false,
     };
 
     result.render(ctx.output_format)
@@ -949,7 +977,12 @@ impl SpendCreditsResult {
                 "Amount",
                 self.amount_cents as f64 / 100.0
             )?;
-            writeln!(w, "{:>10}: {}", "TX Hash", self.tx_hash)?;
+            if self.dry_run {
+                writeln!(w, "{:>10}: yes", "Dry Run")?;
+            }
+            if let Some(tx_hash) = &self.tx_hash {
+                writeln!(w, "{:>10}: {}", "TX Hash", tx_hash)?;
+            }
             Ok(())
         })
     }

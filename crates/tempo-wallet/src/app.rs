@@ -58,6 +58,7 @@ pub(crate) async fn run(mut cli: Cli) -> Result<(), TempoError> {
                 }
                 Commands::Transfer {
                     credits: true,
+                    dry_run,
                     amount_cents,
                     credits_to,
                     data,
@@ -71,6 +72,7 @@ pub(crate) async fn run(mut cli: Cli) -> Result<(), TempoError> {
                     run_credits_transfer(
                         &ctx,
                         CreditsTransferArgs {
+                            dry_run,
                             amount_cents,
                             to: credits_to,
                             data,
@@ -108,6 +110,7 @@ pub(crate) async fn run(mut cli: Cli) -> Result<(), TempoError> {
 }
 
 struct CreditsTransferArgs {
+    dry_run: bool,
     amount_cents: Option<u64>,
     to: Option<String>,
     data: String,
@@ -125,7 +128,14 @@ async fn run_credits_transfer(ctx: &Context, args: CreditsTransferArgs) -> Resul
     match (args.mpp_challenge, args.mpp_challenge_file) {
         (Some(challenge), None) => {
             reject_raw_transaction_args("--mpp-challenge", has_raw_transaction_args)?;
-            spend_credits::run_mpp(ctx, challenge, args.mpp_client_id, args.address).await
+            spend_credits::run_mpp(
+                ctx,
+                challenge,
+                args.mpp_client_id,
+                args.address,
+                args.dry_run,
+            )
+            .await
         }
         (None, Some(challenge_path)) => {
             reject_raw_transaction_args("--mpp-challenge-file", has_raw_transaction_args)?;
@@ -134,12 +144,22 @@ async fn run_credits_transfer(ctx: &Context, args: CreditsTransferArgs) -> Resul
                 &challenge_path,
                 args.mpp_client_id,
                 args.address,
+                args.dry_run,
             )
             .await
         }
         (None, None) => match (args.amount_cents, args.to) {
             (Some(amount_cents), Some(to)) => {
-                spend_credits::run(ctx, amount_cents, to, args.data, args.value, args.address).await
+                spend_credits::run(
+                    ctx,
+                    amount_cents,
+                    to,
+                    args.data,
+                    args.value,
+                    args.address,
+                    args.dry_run,
+                )
+                .await
             }
             _ => Err(ConfigError::Missing(
                 "--amount-cents and --to are required when using --credits, unless --mpp-challenge is provided".to_string(),
