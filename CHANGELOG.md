@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.5.0 (2026-06-10)
+
+### Minor Changes
+
+- Added TIP-1034 Tempo session client support, including descriptor-backed channel persistence, session reuse, top-ups, SSE voucher updates, and cooperative close handling while preserving legacy session compatibility. (by @alexrisch, [#494](https://github.com/tempoxyz/wallet/pull/494))
+
+### Patch Changes
+
+- Exposed service credit support in wallet service discovery output, allowed filtering for credit-capable services, fixed credits transfer dry runs to avoid redeem submission, and documented the MPP Credits workflow. (by @alexrisch, [#495](https://github.com/tempoxyz/wallet/pull/495), [#496](https://github.com/tempoxyz/wallet/pull/496))
+
 ## 0.4.5 (2026-06-04)
 
 ### Minor Changes
