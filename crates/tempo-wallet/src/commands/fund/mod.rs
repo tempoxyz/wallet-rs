@@ -311,7 +311,8 @@ fn build_fund_url(auth_server_url: &str, target: &Target) -> Result<String, Temp
                 query.append_pair("action", "crypto");
             }
             Target::Credits => {
-                query.append_pair("action", "credits");
+                query.append_pair("action", "fund");
+                query.append_pair("intent", "credits");
             }
             Target::ReferralCode(code) => {
                 query.append_pair("claim", code);
@@ -516,7 +517,7 @@ mod tests {
                 &Target::Credits
             )
             .unwrap(),
-            "https://wallet.moderato.tempo.xyz/?action=credits"
+            "https://wallet.moderato.tempo.xyz/?action=fund&intent=credits"
         );
         assert_eq!(
             build_fund_url(
