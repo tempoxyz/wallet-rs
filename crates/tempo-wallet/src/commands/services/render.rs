@@ -23,6 +23,8 @@ struct ServiceListItem<'a> {
     url: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     service_url: Option<&'a str>,
+    #[serde(rename = "supportsCredits")]
+    supports_credits: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     description: Option<&'a str>,
     categories: Vec<&'a str>,
@@ -40,6 +42,8 @@ struct ServiceDetail<'a> {
     url: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     service_url: Option<&'a str>,
+    #[serde(rename = "supportsCredits")]
+    supports_credits: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     description: Option<&'a str>,
     categories: Vec<&'a str>,
@@ -81,7 +85,8 @@ pub(super) fn render_service_list(
                     || s.tags.iter().any(|t| contains_case_insensitive(t, q_lower))
                     || s.categories
                         .iter()
-                        .any(|c| contains_case_insensitive(c, q_lower));
+                        .any(|c| contains_case_insensitive(c, q_lower))
+                    || (s.supports_credits && contains_case_insensitive("credits", q_lower));
                 if !matches {
                     return false;
                 }
@@ -97,6 +102,7 @@ pub(super) fn render_service_list(
             name: &s.name,
             url: Some(&s.url),
             service_url: s.service_url.as_deref(),
+            supports_credits: s.supports_credits,
             description: s.description.as_deref(),
             categories: s
                 .categories
@@ -133,6 +139,7 @@ pub(super) fn render_service_detail(
         name: &service.name,
         url: Some(&service.url),
         service_url: service.service_url.as_deref(),
+        supports_credits: service.supports_credits,
         description: service.description.as_deref(),
         categories: service
             .categories
@@ -224,6 +231,10 @@ fn render_detail(s: &Service) {
     print_field("Categories", &s.format_categories());
     print_field("Service URL", s.service_url.as_deref().unwrap_or("—"));
     print_field("Upstream URL", &s.url);
+    print_field(
+        "Supports Credits",
+        if s.supports_credits { "yes" } else { "no" },
+    );
 
     if !s.tags.is_empty() {
         print_field("Tags", &s.tags.join(", "));
@@ -307,6 +318,7 @@ mod tests {
             name: "Weather Pro".to_string(),
             url: "https://api.weather.example".to_string(),
             service_url: Some("https://mpp.weather.example".to_string()),
+            supports_credits: true,
             description: Some("Premium weather data".to_string()),
             icon: None,
             categories: vec!["weather".to_string(), "data".to_string()],
@@ -354,6 +366,7 @@ mod tests {
             name: &service.name,
             url: Some(&service.url),
             service_url: service.service_url.as_deref(),
+            supports_credits: service.supports_credits,
             description: service.description.as_deref(),
             categories: service
                 .categories
