@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.1 (2026-06-10)
+
+### Patch Changes
+
+- Update the credits funding handoff URL to use the fund action with a credits intent. (by @alexrisch, [#499](https://github.com/tempoxyz/wallet/pull/499))
+
 ## 0.5.0 (2026-06-10)
 
 ### Minor Changes
