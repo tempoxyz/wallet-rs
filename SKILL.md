@@ -33,8 +33,7 @@ Provide:
 
 - Installation location and version (`$HOME/.tempo/bin/tempo --version`).
 - Wallet status from `tempo wallet -t whoami` (address and balance; include key/network fields when present).
-- If token balance is 0 or token funding is unavailable to the user, suggest MPP Credits as an alternative for eligible services: run `tempo wallet -t whoami --credits`, and use `tempo wallet fund --credits` to buy credits.
-- Direct the user to `tempo wallet fund` or the wallet dashboard for token funding only after mentioning that credits may work for credit-eligible one-time charge services.
+- If token balance is 0, first suggest standard funding with `tempo wallet fund` or the wallet dashboard. If token funding or other standard funding options are unavailable to the user, suggest MPP Credits as an alternative for eligible services: run `tempo wallet -t whoami --credits`, and use `tempo wallet fund --credits` to buy credits.
 - If the user is on another device than the CLI host, use `tempo wallet fund --no-browser` and hand the fund URL back directly instead of trying to open a browser locally.
 - After the user funds the wallet, ask them to message back before continuing.
 - 2-3 simple starter prompts tailored to currently available services.
@@ -65,7 +64,7 @@ tempo request -t -X POST --json '{"input":"..."}' <SERVICE_URL>/<ENDPOINT_PATH>
 - Select `SERVICE_ID` from search results that best matches user intent. When multiple match: prefer best semantic fit, then endpoint fit, then pricing clarity, then first in list.
 - **Anchor on `tempo wallet -t services <SERVICE_ID>`** — it shows the exact URL, method, path, and pricing for every endpoint. Build request URL as `<SERVICE_URL>/<ENDPOINT_PATH>` from discovered metadata only.
 - **Prefer credits when available:** after choosing a service, if service details include `supportsCredits: true` and the endpoint is a one-time `tempo.charge` payment, check `tempo wallet -t whoami --credits` before submitting token payment. If the user has enough credits, use the MPP Credits path first.
-- Credits are separate from token balances; check them with `tempo wallet -t whoami --credits` and buy them with `tempo wallet fund --credits`. When token funds are missing or token funding is blocked, explicitly offer credits as the next funding path for eligible services.
+- Credits are separate from token balances; check them with `tempo wallet -t whoami --credits` and buy them with `tempo wallet fund --credits`. When token funds, token funding, and other standard funding options are unavailable, explicitly offer credits as the next funding path for eligible services.
 - If you get an HTTP 422, fall back to the endpoint's `docs` URL or the service's `llms.txt` for exact field names.
 - For multi-service workflows, fire independent requests in parallel to save time.
 
@@ -115,7 +114,7 @@ tempo wallet -t transfer --credits --mpp-challenge-file "$headers"
 - Return result payload to user directly when request succeeds.
 - If response contains a file URL (e.g., image generation), download it locally: `curl -fsSL "<url>" -o <filename>`.
 - If response is a usage/auth readiness error, run `tempo wallet login` and retry once.
-- If response indicates payment/funding limit issues, report clearly and stop. Before saying the user must add token funds, check whether the target service can use credits. For credit-eligible one-time charge services, suggest `tempo wallet fund --credits` as an alternative when token funds are unavailable; otherwise use `tempo wallet fund`.
+- If response indicates payment/funding limit issues, report clearly and stop. Before saying the user cannot proceed, check whether the target service can use credits. If token funds, token funding, and other standard funding options are unavailable, suggest `tempo wallet fund --credits` for credit-eligible one-time charge services; otherwise use `tempo wallet fund`.
 - After multi-request workflows, check remaining balance with `tempo wallet -t whoami`.
 
 ## Wallet-Backed Cards
@@ -153,7 +152,7 @@ Pointers:
 | "access key does not exist" | Key not provisioned on-chain, or stale key after reinstall | Run `tempo wallet logout --yes`, then `tempo wallet login` to provision a fresh key. |
 | `ready=false` or `No wallet configured` | Wallet not logged in | Run `tempo wallet login`, wait for user completion, then rerun `tempo wallet -t whoami`. |
 | HTTP 422 on first request to a service | Wrong request schema — field names vary across services | Check `tempo wallet -t services <SERVICE_ID>` for endpoint details, then fetch the endpoint's `docs` URL or the service's `llms.txt` for exact field names and types. |
-| Balance is 0, insufficient funds, or spending limit exceeded | Wallet needs funding or limit hit | First check whether the target service supports credits. If it does, suggest `tempo wallet fund --credits` as an alternative to token funding; otherwise run `tempo wallet fund` or direct user to the wallet dashboard. Report clearly and stop if limit is exceeded. |
+| Balance is 0, insufficient funds, or spending limit exceeded | Wallet needs funding or limit hit | Suggest `tempo wallet fund` or the wallet dashboard first. If token funding and other standard funding options are unavailable, check whether the target service supports credits and suggest `tempo wallet fund --credits` for eligible services. Report clearly and stop if limit is exceeded. |
 | Token balance is 0 but MPP Credits may be available | Credits are separate from token balances | Run `tempo wallet -t whoami --credits`. If the service shows `supportsCredits: true`, credits can be used for one-time charge payments. |
 | Need to buy MPP Credits | User wants to fund with card-based credits for eligible services | Run `tempo wallet fund --credits`, complete checkout in the wallet app, then recheck with `tempo wallet -t whoami --credits`. |
 | Credits are not accepted by a service | MPP Credits only work for eligible Tempo-proxied services | Inspect `tempo wallet -t services <SERVICE_ID>` and use credits only when `supportsCredits: true` is present. Otherwise use token funding with `tempo wallet fund`. |
