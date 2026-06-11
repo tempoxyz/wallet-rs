@@ -64,7 +64,8 @@ tempo request -t -X POST --json '{"input":"..."}' <SERVICE_URL>/<ENDPOINT_PATH>
 
 - Select `SERVICE_ID` from search results that best matches user intent. When multiple match: prefer best semantic fit, then endpoint fit, then pricing clarity, then first in list.
 - **Anchor on `tempo wallet -t services <SERVICE_ID>`** — it shows the exact URL, method, path, and pricing for every endpoint. Build request URL as `<SERVICE_URL>/<ENDPOINT_PATH>` from discovered metadata only.
-- If service details include `supportsCredits: true`, MPP Credits may be used for one-time `tempo.charge` payments. Credits are separate from token balances; check them with `tempo wallet -t whoami --credits` and buy them with `tempo wallet fund --credits`.
+- **Prefer credits when available:** after choosing a service, if service details include `supportsCredits: true` and the endpoint is a one-time `tempo.charge` payment, check `tempo wallet -t whoami --credits` before submitting token payment. If the user has enough credits, use the MPP Credits path first.
+- Credits are separate from token balances; check them with `tempo wallet -t whoami --credits` and buy them with `tempo wallet fund --credits`.
 - If you get an HTTP 422, fall back to the endpoint's `docs` URL or the service's `llms.txt` for exact field names.
 - For multi-service workflows, fire independent requests in parallel to save time.
 
@@ -81,7 +82,13 @@ tempo request -t -X GET <SERVICE_URL>/<ENDPOINT_PATH>
 
 ### MPP Credits for One-Time Charges
 
-Use MPP Credits only when service details show `supportsCredits: true` and the endpoint is a one-time `tempo.charge` payment, not a session-based payment.
+Use MPP Credits first when all of these are true:
+
+- Service details show `supportsCredits: true`.
+- The endpoint is a one-time `tempo.charge` payment, not a session-based payment.
+- `tempo wallet -t whoami --credits` shows available credits.
+
+Do not spend token balance first for a credit-eligible one-time charge when credits are available.
 
 ```bash
 # Check/buy credits separately from token balance
@@ -108,7 +115,7 @@ tempo wallet -t transfer --credits --mpp-challenge-file "$headers"
 - Return result payload to user directly when request succeeds.
 - If response contains a file URL (e.g., image generation), download it locally: `curl -fsSL "<url>" -o <filename>`.
 - If response is a usage/auth readiness error, run `tempo wallet login` and retry once.
-- If response indicates payment/funding limit issues, report clearly and stop. For token funding use `tempo wallet fund`; for MPP Credits use `tempo wallet fund --credits` only when service details show `supportsCredits: true`.
+- If response indicates payment/funding limit issues, report clearly and stop. For credit-eligible one-time charge services, check credits with `tempo wallet -t whoami --credits` before directing the user to token funding. Use `tempo wallet fund --credits` only when service details show `supportsCredits: true`; otherwise use `tempo wallet fund`.
 - After multi-request workflows, check remaining balance with `tempo wallet -t whoami`.
 
 ## Wallet-Backed Cards
