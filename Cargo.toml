@@ -39,7 +39,7 @@ hex = "0.4"
 minisign = "0.9"
 hostname = "0.4"
 mpp = { git = "https://github.com/tempoxyz/mpp-rs", rev = "0d57f96ff670b290801b2ead9e0f1d637e0f2b3e", features = ["tempo", "evm", "utils", "client", "server"] }
-posthog-rs = "0.7.3"
+posthog-rs = "0.10.0"
 qrcode = { version = "0.14", default-features = false }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "http2", "json"] }
 rusqlite = { version = "0.40", features = ["bundled"] }
