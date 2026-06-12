@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.2 (2026-06-12)
+
+### Patch Changes
+
+- Make the Tempo skill credits flow easier to discover by surfacing credit usage and first-time funding guidance more prominently. (by @alexrisch, [#501](https://github.com/tempoxyz/wallet/pull/501))
+
 ## 0.5.1 (2026-06-10)
 
 ### Patch Changes
