@@ -17,7 +17,7 @@ use tempo_primitives::transaction::Call;
 use tempo_common::{
     cli::{context::Context, output, terminal::hyperlink},
     error::{InputError, NetworkError, TempoError},
-    payment::session::{submit_tempo_tx_and_wait, TempoTxReceipt},
+    payment::session::submit_tempo_tx_and_wait,
 };
 
 sol! {
@@ -182,6 +182,7 @@ struct HeldTransferInfo {
 }
 
 /// A transfer redirected to `ReceivePolicyGuard` by the recipient's receive policy.
+#[derive(Debug)]
 struct HeldTransfer {
     blocked_nonce: u64,
     recovery_authority: Address,
@@ -190,22 +191,30 @@ struct HeldTransfer {
     receipt_witness: Bytes,
 }
 
-/// Scan a confirmed receipt for a `TransferBlocked` event matching this transfer.
-///
-/// Matches on the guard precompile address, token, amount, and — critically for
-/// TIP-1022 virtual addresses — the receipt's `originator`/`recipient` rather than
-/// the event's resolved `receiver`. Returns the first held transfer found.
-fn find_blocked_transfer(
-    receipt: &TempoTxReceipt,
+/// Classify a confirmed transfer: `Err` if reverted, `Ok(Some)` if held by a
+/// receive policy, `Ok(None)` if credited. Split from the receipt so the
+/// decision is unit-testable.
+fn classify_transfer_outcome(
+    status: bool,
+    logs: &[alloy::rpc::types::Log],
     token: Address,
     from: Address,
     to: Address,
     amount: U256,
-) -> Option<HeldTransfer> {
-    find_blocked_transfer_in_logs(receipt.inner.logs(), token, from, to, amount)
+    tx_hash: &str,
+) -> Result<Option<HeldTransfer>, TempoError> {
+    if !status {
+        return Err(NetworkError::Rpc {
+            operation: "token transfer",
+            reason: format!("transaction reverted (tx {tx_hash})"),
+        }
+        .into());
+    }
+
+    Ok(find_blocked_transfer_in_logs(logs, token, from, to, amount))
 }
 
-/// Receipt-independent core of [`find_blocked_transfer`], split out for testing.
+/// Core log scan for a `TransferBlocked` match, split out for testing.
 fn find_blocked_transfer_in_logs(
     logs: &[alloy::rpc::types::Log],
     token: Address,
@@ -362,23 +371,16 @@ pub(crate) async fn run(
     let tx_url = ctx.network.tx_url(&tx_hash);
     let blockhash = confirmed.receipt.block_hash().map(|h| format!("{h:#x}"));
 
-    // A reverted transaction is neither a success nor a held transfer.
-    if !confirmed.receipt.status() {
-        return Err(NetworkError::Rpc {
-            operation: "token transfer",
-            reason: format!("transaction reverted (tx {tx_hash})"),
-        }
-        .into());
-    }
-
-    // TIP-1028 (T6): detect a transfer held by the recipient's receive policy.
-    let held = find_blocked_transfer(
-        &confirmed.receipt,
+    // Revert errors; otherwise detect a TIP-1028 (T6) held transfer.
+    let held = classify_transfer_outcome(
+        confirmed.receipt.status(),
+        confirmed.receipt.inner.logs(),
         token.address,
         from,
         to_address,
         amount_atomic,
-    );
+        &tx_hash,
+    )?;
 
     let response = TransferResponse {
         status: if held.is_some() { "held" } else { "success" },
@@ -606,15 +608,13 @@ mod tests {
     fn rejects_inconsistent_receipt() {
         let amount = U256::from(10u64);
 
-        // claim.version != 1
         let mut bad_claim_version = BlockedLog::matching(amount, 1);
         bad_claim_version.claim_version = 2;
 
-        // event.receiptVersion != 1
         let mut bad_event_version = BlockedLog::matching(amount, 1);
         bad_event_version.event_version = 2;
 
-        // claim.blockedNonce != event.blockedNonce
+        // claim/event nonce disagree
         let mut nonce_mismatch = BlockedLog::matching(amount, 9);
         nonce_mismatch.claim_nonce = 5;
 
@@ -625,6 +625,39 @@ mod tests {
         ] {
             assert!(find(&[log], amount).is_none());
         }
+    }
+
+    fn status_of(outcome: &Result<Option<HeldTransfer>, TempoError>) -> &'static str {
+        match outcome {
+            Ok(Some(_)) => "held",
+            Ok(None) => "success",
+            Err(_) => "error",
+        }
+    }
+
+    #[test]
+    fn classify_reverted_receipt_errors() {
+        let amount = U256::from(10u64);
+        let outcome = classify_transfer_outcome(false, &[], TOKEN, FROM, TO, amount, "0xdead");
+        assert!(outcome.is_err());
+        assert!(outcome.unwrap_err().to_string().contains("reverted"));
+    }
+
+    #[test]
+    fn classify_blocked_receipt_is_held() {
+        let amount = U256::from(10u64);
+        let logs = [BlockedLog::matching(amount, 7).build()];
+        let outcome = classify_transfer_outcome(true, &logs, TOKEN, FROM, TO, amount, "0xabc");
+        assert_eq!(status_of(&outcome), "held");
+        assert_eq!(outcome.unwrap().unwrap().blocked_nonce, 7);
+    }
+
+    #[test]
+    fn classify_credited_receipt_is_success() {
+        let amount = U256::from(10u64);
+        let outcome = classify_transfer_outcome(true, &[], TOKEN, FROM, TO, amount, "0xabc");
+        assert_eq!(status_of(&outcome), "success");
+        assert!(outcome.unwrap().is_none());
     }
 
     #[test]
