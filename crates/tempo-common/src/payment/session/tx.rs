@@ -4,11 +4,12 @@
 //! All transactions use expiring nonces (nonceKey=MAX, nonce=0) so no
 //! on-chain nonce fetch is needed.
 
-use std::num::NonZeroU64;
+use std::{num::NonZeroU64, time::Duration};
 
 use alloy::{
+    network::Network,
     primitives::{Address, Bytes, TxKind, B256, U256},
-    providers::Provider,
+    providers::{PendingTransactionError, Provider},
     sol,
     sol_types::SolCall,
 };
@@ -346,6 +347,122 @@ pub async fn submit_tempo_tx(
             }
             .into()
         })),
+    }
+}
+
+/// On-chain receipt type for the Tempo network.
+pub type TempoTxReceipt = <mpp::client::TempoNetwork as Network>::ReceiptResponse;
+
+/// A broadcast Tempo transaction together with its mined receipt.
+pub struct ConfirmedTempoTx {
+    pub tx_hash: String,
+    pub receipt: TempoTxReceipt,
+}
+
+/// Maximum time to wait for a transaction receipt before reporting unknown finality.
+const RECEIPT_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Submit a Tempo type-0x76 transaction and wait for its mined receipt.
+///
+/// Unlike [`submit_tempo_tx`], which returns as soon as the transaction is
+/// broadcast, this waits for inclusion so callers can inspect the receipt
+/// (status and logs). Uses the same stored-key-authorization retry path.
+///
+/// # Errors
+///
+/// Returns an error when signing, broadcast, or receipt polling fails (including
+/// a timeout, in which case the error carries the broadcast tx hash).
+pub async fn submit_tempo_tx_and_wait(
+    provider: &alloy::providers::RootProvider<mpp::client::TempoNetwork>,
+    wallet: &Signer,
+    chain_id: u64,
+    fee_token: Address,
+    from: Address,
+    calls: Vec<tempo_primitives::transaction::Call>,
+) -> ChannelResult<ConfirmedTempoTx> {
+    let tx_bytes =
+        resolve_and_sign_tx(provider, wallet, chain_id, fee_token, from, calls.clone()).await?;
+
+    let pending = match provider.send_raw_transaction(&tx_bytes).await {
+        Ok(pending) => pending,
+        Err(original) if wallet.has_stored_key_authorization() => {
+            let provisioning_signer =
+                wallet
+                    .with_key_authorization()
+                    .ok_or_else(|| KeyError::SigningOperation {
+                        operation: "key provisioning",
+                        reason: "stored key authorization could not be applied to signing mode"
+                            .to_string(),
+                    })?;
+            let retry_bytes = resolve_and_sign_tx(
+                provider,
+                &provisioning_signer,
+                chain_id,
+                fee_token,
+                from,
+                calls,
+            )
+            .await?;
+            provider
+                .send_raw_transaction(&retry_bytes)
+                .await
+                .map_err(|source| {
+                    classify_tx_error(&source)
+                        .or_else(|| classify_tx_error(&original))
+                        .unwrap_or_else(|| {
+                            NetworkError::RpcSource {
+                                operation: "broadcast transaction",
+                                source: Box::new(original),
+                            }
+                            .into()
+                        })
+                })?
+        }
+        Err(source) => {
+            return Err(classify_tx_error(&source).unwrap_or_else(|| {
+                NetworkError::RpcSource {
+                    operation: "broadcast transaction",
+                    source: Box::new(source),
+                }
+                .into()
+            }))
+        }
+    };
+
+    let tx_hash = format!("{:#x}", pending.tx_hash());
+
+    let receipt = pending
+        .with_timeout(Some(RECEIPT_TIMEOUT))
+        .get_receipt()
+        .await
+        .map_err(|source| NetworkError::RpcSource {
+            operation: "await transaction receipt",
+            source: Box::new(TxReceiptError {
+                tx_hash: tx_hash.clone(),
+                source,
+            }),
+        })?;
+
+    Ok(ConfirmedTempoTx { tx_hash, receipt })
+}
+
+/// Wraps a receipt-polling failure with the broadcast tx hash so users can
+/// follow up on a transaction whose finality is unknown.
+#[derive(Debug)]
+struct TxReceiptError {
+    tx_hash: String,
+    source: PendingTransactionError,
+}
+
+impl std::fmt::Display for TxReceiptError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} (tx {})", self.source, self.tx_hash)
+    }
+}
+
+impl std::error::Error for TxReceiptError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.source)
     }
 }
 

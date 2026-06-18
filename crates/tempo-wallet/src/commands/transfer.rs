@@ -1,13 +1,15 @@
 //! Transfer tokens to an address.
 
 use alloy::{
+    network::ReceiptResponse,
     primitives::{
+        address,
         utils::{parse_units, ParseUnits},
         Address, Bytes, TxKind, U256,
     },
     providers::Provider,
     sol,
-    sol_types::SolCall,
+    sol_types::{SolCall, SolEvent, SolValue},
 };
 use serde::Serialize;
 use tempo_primitives::transaction::Call;
@@ -15,7 +17,7 @@ use tempo_primitives::transaction::Call;
 use tempo_common::{
     cli::{context::Context, output, terminal::hyperlink},
     error::{InputError, NetworkError, TempoError},
-    payment::session::submit_tempo_tx,
+    payment::session::{submit_tempo_tx_and_wait, TempoTxReceipt},
 };
 
 sol! {
@@ -26,6 +28,46 @@ sol! {
         function decimals() external view returns (uint8);
         function symbol() external view returns (string);
     }
+}
+
+// ---------------------------------------------------------------------------
+// TIP-1028 receive-policy guard (T6)
+// ---------------------------------------------------------------------------
+
+/// `ReceivePolicyGuard` precompile address (TIP-1028).
+const RECEIVE_POLICY_GUARD_ADDRESS: Address = address!("b10c000000000000000000000000000000000000");
+
+sol! {
+    #[derive(Debug, PartialEq, Eq)]
+    enum InboundKind {
+        TRANSFER,
+        MINT,
+    }
+
+    /// ABI-encoded claim witness emitted in `TransferBlocked.receipt`.
+    #[derive(Debug)]
+    struct ClaimReceiptV1 {
+        uint8 version;
+        address token;
+        address recoveryAuthority;
+        address originator;
+        address recipient;
+        uint64 blockedAt;
+        uint64 blockedNonce;
+        uint8 blockedReason;
+        InboundKind kind;
+        bytes32 memo;
+    }
+
+    /// Emitted by `ReceivePolicyGuard` when an inbound transfer/mint is held.
+    event TransferBlocked(
+        address indexed token,
+        address indexed receiver,
+        uint64 indexed blockedNonce,
+        uint256 amount,
+        uint8 receiptVersion,
+        bytes receipt
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -119,6 +161,94 @@ struct TransferResponse {
     fee: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     blockhash: Option<String>,
+    /// Present when the transfer was held by the recipient's receive policy (TIP-1028).
+    #[serde(skip_serializing_if = "Option::is_none", flatten)]
+    held: Option<HeldTransferInfo>,
+}
+
+/// Details of a transfer held by a TIP-1028 receive policy.
+#[derive(Debug, Serialize)]
+struct HeldTransferInfo {
+    /// Guard nonce assigned to the blocked transfer, for correlation.
+    blocked_nonce: u64,
+    /// ABI-encoded receipt witness, usable as the `claim`/`balanceOf` argument.
+    claim_receipt: String,
+    /// Recovery authority captured in the receipt (`0x0…0` means originator recovery).
+    recovery_authority: String,
+    /// Who is authorized to claim: `originator`, `recovery_authority`, or `unknown`.
+    claimable_by: &'static str,
+    /// Whether this wallet (the sender) is the authorized claimer.
+    claimable_by_this_wallet: bool,
+}
+
+/// A transfer redirected to `ReceivePolicyGuard` by the recipient's receive policy.
+struct HeldTransfer {
+    blocked_nonce: u64,
+    recovery_authority: Address,
+    /// True when `from` (the sender) may claim the held funds.
+    claimable_by_sender: bool,
+    receipt_witness: Bytes,
+}
+
+/// Scan a confirmed receipt for a `TransferBlocked` event matching this transfer.
+///
+/// Matches on the guard precompile address, token, amount, and — critically for
+/// TIP-1022 virtual addresses — the receipt's `originator`/`recipient` rather than
+/// the event's resolved `receiver`. Returns the first held transfer found.
+fn find_blocked_transfer(
+    receipt: &TempoTxReceipt,
+    token: Address,
+    from: Address,
+    to: Address,
+    amount: U256,
+) -> Option<HeldTransfer> {
+    find_blocked_transfer_in_logs(receipt.inner.logs(), token, from, to, amount)
+}
+
+/// Receipt-independent core of [`find_blocked_transfer`], split out for testing.
+fn find_blocked_transfer_in_logs(
+    logs: &[alloy::rpc::types::Log],
+    token: Address,
+    from: Address,
+    to: Address,
+    amount: U256,
+) -> Option<HeldTransfer> {
+    logs.iter().find_map(|log| {
+        if log.address() != RECEIVE_POLICY_GUARD_ADDRESS {
+            return None;
+        }
+
+        let event = TransferBlocked::decode_log(log.as_ref()).ok()?;
+        if event.token != token || event.amount != amount || event.receiptVersion != 1 {
+            return None;
+        }
+
+        // Decode the v1 witness so virtual-address recipients match correctly.
+        let claim = ClaimReceiptV1::abi_decode(&event.receipt).ok()?;
+        if claim.version != 1
+            || claim.blockedNonce != event.blockedNonce
+            || claim.token != token
+            || claim.originator != from
+            || claim.recipient != to
+            || claim.kind != InboundKind::TRANSFER
+        {
+            return None;
+        }
+
+        let claimable_by_sender = if claim.recoveryAuthority == Address::ZERO {
+            // Originator recovery: only the originator may claim.
+            from == claim.originator
+        } else {
+            claim.recoveryAuthority == from
+        };
+
+        Some(HeldTransfer {
+            blocked_nonce: event.blockedNonce,
+            recovery_authority: claim.recoveryAuthority,
+            claimable_by_sender,
+            receipt_witness: event.receipt.clone(),
+        })
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -172,6 +302,7 @@ pub(crate) async fn run(
             from: format!("{from:#x}"),
             fee: None,
             blockhash: None,
+            held: None,
         };
 
         return output::emit_by_format(ctx.output_format, &response, || {
@@ -217,7 +348,7 @@ pub(crate) async fn run(
     let tempo_provider =
         alloy::providers::RootProvider::<mpp::client::TempoNetwork>::new_http(rpc_url);
 
-    let tx_hash = submit_tempo_tx(
+    let confirmed = submit_tempo_tx_and_wait(
         &tempo_provider,
         &wallet,
         chain_id,
@@ -227,10 +358,30 @@ pub(crate) async fn run(
     )
     .await?;
 
+    let tx_hash = confirmed.tx_hash.clone();
     let tx_url = ctx.network.tx_url(&tx_hash);
+    let blockhash = confirmed.receipt.block_hash().map(|h| format!("{h:#x}"));
+
+    // A reverted transaction is neither a success nor a held transfer.
+    if !confirmed.receipt.status() {
+        return Err(NetworkError::Rpc {
+            operation: "token transfer",
+            reason: format!("transaction reverted (tx {tx_hash})"),
+        }
+        .into());
+    }
+
+    // TIP-1028 (T6): detect a transfer held by the recipient's receive policy.
+    let held = find_blocked_transfer(
+        &confirmed.receipt,
+        token.address,
+        from,
+        to_address,
+        amount_atomic,
+    );
 
     let response = TransferResponse {
-        status: "success",
+        status: if held.is_some() { "held" } else { "success" },
         tx_hash: Some(tx_hash.clone()),
         chain_id: ctx.network.chain_id(),
         amount: amount_human,
@@ -239,13 +390,47 @@ pub(crate) async fn run(
         to: format!("{to_address:#x}"),
         from: format!("{from:#x}"),
         fee: None,
-        blockhash: None,
+        blockhash,
+        held: held.as_ref().map(|h| HeldTransferInfo {
+            blocked_nonce: h.blocked_nonce,
+            claim_receipt: format!("0x{}", hex::encode(&h.receipt_witness)),
+            recovery_authority: format!("{:#x}", h.recovery_authority),
+            claimable_by: if h.recovery_authority == Address::ZERO {
+                "originator"
+            } else {
+                "recovery_authority"
+            },
+            claimable_by_this_wallet: h.claimable_by_sender,
+        }),
     };
 
     output::emit_by_format(ctx.output_format, &response, || {
         eprintln!();
-        eprintln!("  Submitted");
         let tx_link = hyperlink(&tx_hash, &tx_url);
+        if let Some(h) = &held {
+            eprintln!("  Held by recipient's receive policy");
+            eprintln!(
+                "    Funds were redirected to ReceivePolicyGuard ({RECEIVE_POLICY_GUARD_ADDRESS:#x})"
+            );
+            eprintln!("    and can be recovered later with the receipt below.");
+            eprintln!("    Blocked nonce: {}", h.blocked_nonce);
+            if h.recovery_authority == Address::ZERO {
+                eprintln!("    Claim authority: originator (this wallet)");
+            } else {
+                eprintln!(
+                    "    Claim authority: {}{}",
+                    format_address(h.recovery_authority),
+                    if h.claimable_by_sender {
+                        " (this wallet)"
+                    } else {
+                        ""
+                    }
+                );
+            }
+            eprintln!("    Claim receipt: 0x{}", hex::encode(&h.receipt_witness));
+        } else {
+            eprintln!("  Success");
+        }
         eprintln!("    TX: {tx_link}");
         if tx_link == tx_hash {
             eprintln!("    {tx_url}");
@@ -260,5 +445,227 @@ fn format_address(addr: Address) -> String {
         format!("{}…{}", &s[..6], &s[s.len() - 4..])
     } else {
         s
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy::{
+        primitives::{Bytes, FixedBytes, Log as PrimitiveLog, LogData},
+        rpc::types::Log as RpcLog,
+    };
+
+    const GUARD: Address = RECEIVE_POLICY_GUARD_ADDRESS;
+    const TOKEN: Address = Address::new([0x11; 20]);
+    const FROM: Address = Address::new([0x22; 20]);
+    const TO: Address = Address::new([0x33; 20]);
+
+    fn rpc_log(address: Address, data: LogData) -> RpcLog {
+        RpcLog {
+            inner: PrimitiveLog { address, data },
+            ..Default::default()
+        }
+    }
+
+    /// Builder for a `TransferBlocked` guard log, with every field independently
+    /// settable so both happy-path and inconsistent receipts can be exercised.
+    struct BlockedLog {
+        guard: Address,
+        token: Address,
+        receiver: Address,
+        originator: Address,
+        recipient: Address,
+        recovery: Address,
+        amount: U256,
+        event_nonce: u64,
+        claim_nonce: u64,
+        event_version: u8,
+        claim_version: u8,
+        kind: InboundKind,
+    }
+
+    impl BlockedLog {
+        /// A fully consistent, matching held transfer of `amount` to `TO`.
+        fn matching(amount: U256, nonce: u64) -> Self {
+            Self {
+                guard: GUARD,
+                token: TOKEN,
+                receiver: TO,
+                originator: FROM,
+                recipient: TO,
+                recovery: Address::ZERO,
+                amount,
+                event_nonce: nonce,
+                claim_nonce: nonce,
+                event_version: 1,
+                claim_version: 1,
+                kind: InboundKind::TRANSFER,
+            }
+        }
+
+        fn build(&self) -> RpcLog {
+            let claim = ClaimReceiptV1 {
+                version: self.claim_version,
+                token: self.token,
+                recoveryAuthority: self.recovery,
+                originator: self.originator,
+                recipient: self.recipient,
+                blockedAt: 0,
+                blockedNonce: self.claim_nonce,
+                blockedReason: 0,
+                kind: self.kind,
+                memo: FixedBytes::ZERO,
+            };
+            let event = TransferBlocked {
+                token: self.token,
+                receiver: self.receiver,
+                blockedNonce: self.event_nonce,
+                amount: self.amount,
+                receiptVersion: self.event_version,
+                receipt: Bytes::from(claim.abi_encode()),
+            };
+            rpc_log(self.guard, event.encode_log_data())
+        }
+    }
+
+    fn find(logs: &[RpcLog], amount: U256) -> Option<HeldTransfer> {
+        find_blocked_transfer_in_logs(logs, TOKEN, FROM, TO, amount)
+    }
+
+    #[test]
+    fn detects_matching_held_transfer() {
+        let amount = U256::from(1_000_000u64);
+        let held = find(&[BlockedLog::matching(amount, 7).build()], amount)
+            .expect("should detect held transfer");
+        assert_eq!(held.blocked_nonce, 7);
+        assert_eq!(held.recovery_authority, Address::ZERO);
+        // Originator recovery and the sender is the originator → claimable by sender.
+        assert!(held.claimable_by_sender);
+    }
+
+    #[test]
+    fn matches_virtual_address_via_receipt_recipient() {
+        // Virtual: event.receiver is the resolved master (!= TO), but the witness
+        // recipient is the literal TO the sender addressed. Must still match.
+        let amount = U256::from(42u64);
+        let mut log = BlockedLog::matching(amount, 3);
+        log.receiver = Address::new([0x99; 20]);
+        let held = find(&[log.build()], amount).expect("should match on receipt recipient");
+        assert_eq!(held.blocked_nonce, 3);
+    }
+
+    #[test]
+    fn non_sender_recovery_authority_is_not_claimable() {
+        let amount = U256::from(5u64);
+        let recovery = Address::new([0x44; 20]);
+        let mut log = BlockedLog::matching(amount, 1);
+        log.recovery = recovery;
+        let held = find(&[log.build()], amount).unwrap();
+        assert_eq!(held.recovery_authority, recovery);
+        assert!(!held.claimable_by_sender);
+    }
+
+    #[test]
+    fn ignores_non_matching_logs() {
+        let amount = U256::from(10u64);
+
+        // Spoofed (non-guard) emitter address.
+        let mut spoof = BlockedLog::matching(amount, 1);
+        spoof.guard = Address::new([0xEE; 20]);
+
+        // Wrong token.
+        let mut wrong_token = BlockedLog::matching(amount, 1);
+        wrong_token.token = Address::new([0xAB; 20]);
+
+        // Wrong amount.
+        let wrong_amount = BlockedLog::matching(U256::from(999u64), 1);
+
+        // Blocked mint, not a transfer.
+        let mut mint = BlockedLog::matching(amount, 1);
+        mint.kind = InboundKind::MINT;
+
+        // Unrelated event at the guard address (e.g. the normal Transfer → guard).
+        let junk = rpc_log(
+            GUARD,
+            LogData::new_unchecked(vec![FixedBytes::with_last_byte(0xAB)], Bytes::new()),
+        );
+
+        for log in [
+            spoof.build(),
+            wrong_token.build(),
+            wrong_amount.build(),
+            mint.build(),
+            junk,
+        ] {
+            assert!(find(&[log], amount).is_none());
+        }
+    }
+
+    #[test]
+    fn rejects_inconsistent_receipt() {
+        let amount = U256::from(10u64);
+
+        // claim.version != 1
+        let mut bad_claim_version = BlockedLog::matching(amount, 1);
+        bad_claim_version.claim_version = 2;
+
+        // event.receiptVersion != 1
+        let mut bad_event_version = BlockedLog::matching(amount, 1);
+        bad_event_version.event_version = 2;
+
+        // claim.blockedNonce != event.blockedNonce
+        let mut nonce_mismatch = BlockedLog::matching(amount, 9);
+        nonce_mismatch.claim_nonce = 5;
+
+        for log in [
+            bad_claim_version.build(),
+            bad_event_version.build(),
+            nonce_mismatch.build(),
+        ] {
+            assert!(find(&[log], amount).is_none());
+        }
+    }
+
+    #[test]
+    fn response_json_shape() {
+        // Success: no held fields leak into the output.
+        let success = TransferResponse {
+            status: "success",
+            tx_hash: Some("0xabc".to_string()),
+            chain_id: 42431,
+            amount: "1.00".to_string(),
+            symbol: "USDC".to_string(),
+            token: "0x11".to_string(),
+            to: "0x33".to_string(),
+            from: "0x22".to_string(),
+            fee: None,
+            blockhash: Some("0xdef".to_string()),
+            held: None,
+        };
+        let json = serde_json::to_value(&success).unwrap();
+        assert_eq!(json["status"], "success");
+        assert!(json.get("blocked_nonce").is_none());
+        assert!(json.get("held").is_none());
+
+        // Held: HeldTransferInfo is flattened to top level, not nested under "held".
+        let held = TransferResponse {
+            status: "held",
+            held: Some(HeldTransferInfo {
+                blocked_nonce: 7,
+                claim_receipt: "0xdeadbeef".to_string(),
+                recovery_authority: "0x0".to_string(),
+                claimable_by: "originator",
+                claimable_by_this_wallet: true,
+            }),
+            ..success
+        };
+        let json = serde_json::to_value(&held).unwrap();
+        assert_eq!(json["status"], "held");
+        assert_eq!(json["blocked_nonce"], 7);
+        assert_eq!(json["claim_receipt"], "0xdeadbeef");
+        assert_eq!(json["claimable_by"], "originator");
+        assert_eq!(json["claimable_by_this_wallet"], true);
+        assert!(json.get("held").is_none());
     }
 }
