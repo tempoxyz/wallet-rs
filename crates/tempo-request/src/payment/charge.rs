@@ -284,9 +284,21 @@ fn parse_payment_rejection(response: &HttpResponse) -> PaymentError {
     };
     let reason = sanitize_for_terminal(&raw_reason);
 
-    PaymentError::PaymentRejected {
-        reason,
-        status_code: response.status_code,
+    match response.status_code {
+        500..=599 => PaymentError::UpstreamServerError {
+            reason,
+            status_code: response.status_code,
+        },
+        400..=499 if !is_retriable_payment_rejection(response) => {
+            PaymentError::UpstreamApplicationError {
+                reason,
+                status_code: response.status_code,
+            }
+        }
+        _ => PaymentError::PaymentRejected {
+            reason,
+            status_code: response.status_code,
+        },
     }
 }
 
@@ -297,7 +309,7 @@ mod tests {
     #[test]
     fn test_parse_payment_rejection_returns_full_json_body() {
         let body = br#"{"error":"insufficient funds","details":"need 0.05 USDC"}"#;
-        let resp = HttpResponse::for_test(400, body);
+        let resp = HttpResponse::for_test(402, body);
         let err = parse_payment_rejection(&resp);
         match err {
             PaymentError::PaymentRejected {
@@ -306,22 +318,43 @@ mod tests {
             } => {
                 assert!(reason.contains("insufficient funds"));
                 assert!(reason.contains("need 0.05 USDC"));
-                assert_eq!(status_code, 400);
+                assert_eq!(status_code, 402);
             }
             _ => panic!("expected PaymentRejected"),
         }
     }
 
     #[test]
-    fn test_parse_payment_rejection_plain_text() {
+    fn test_parse_payment_rejection_classifies_upstream_application_error() {
+        let body = br#"{"error":"invalid_request","message":"missing input"}"#;
+        let resp = HttpResponse::for_test(400, body);
+        let err = parse_payment_rejection(&resp);
+        match err {
+            PaymentError::UpstreamApplicationError {
+                reason,
+                status_code,
+            } => {
+                assert!(reason.contains("invalid_request"));
+                assert_eq!(status_code, 400);
+            }
+            _ => panic!("expected UpstreamApplicationError"),
+        }
+    }
+
+    #[test]
+    fn test_parse_payment_rejection_classifies_upstream_server_error() {
         let body = b"Transaction reverted";
         let resp = HttpResponse::for_test(500, body);
         let err = parse_payment_rejection(&resp);
         match err {
-            PaymentError::PaymentRejected { reason, .. } => {
+            PaymentError::UpstreamServerError {
+                reason,
+                status_code,
+            } => {
                 assert_eq!(reason, "Transaction reverted");
+                assert_eq!(status_code, 500);
             }
-            _ => panic!("expected PaymentRejected"),
+            _ => panic!("expected UpstreamServerError"),
         }
     }
 
@@ -331,10 +364,10 @@ mod tests {
         let resp = HttpResponse::for_test(500, body.as_bytes());
         let err = parse_payment_rejection(&resp);
         match err {
-            PaymentError::PaymentRejected { reason, .. } => {
+            PaymentError::UpstreamServerError { reason, .. } => {
                 assert_eq!(reason.len(), MAX_REJECTION_REASON_CHARS);
             }
-            _ => panic!("expected PaymentRejected"),
+            _ => panic!("expected UpstreamServerError"),
         }
     }
 
@@ -343,10 +376,10 @@ mod tests {
         let resp = HttpResponse::for_test(500, b"");
         let err = parse_payment_rejection(&resp);
         match err {
-            PaymentError::PaymentRejected { reason, .. } => {
+            PaymentError::UpstreamServerError { reason, .. } => {
                 assert_eq!(reason, "HTTP 500");
             }
-            _ => panic!("expected PaymentRejected"),
+            _ => panic!("expected UpstreamServerError"),
         }
     }
 
@@ -355,10 +388,10 @@ mod tests {
         let resp = HttpResponse::for_test(503, b"   \n\t  ");
         let err = parse_payment_rejection(&resp);
         match err {
-            PaymentError::PaymentRejected { reason, .. } => {
+            PaymentError::UpstreamServerError { reason, .. } => {
                 assert_eq!(reason, "HTTP 503");
             }
-            _ => panic!("expected PaymentRejected"),
+            _ => panic!("expected UpstreamServerError"),
         }
     }
 
@@ -367,10 +400,10 @@ mod tests {
         let resp = HttpResponse::for_test(500, &[0xff, 0xfe, 0xfd]);
         let err = parse_payment_rejection(&resp);
         match err {
-            PaymentError::PaymentRejected { reason, .. } => {
+            PaymentError::UpstreamServerError { reason, .. } => {
                 assert_eq!(reason, "HTTP 500");
             }
-            _ => panic!("expected PaymentRejected"),
+            _ => panic!("expected UpstreamServerError"),
         }
     }
 
@@ -378,6 +411,16 @@ mod tests {
     fn test_parse_payment_rejection_keeps_inactive_access_key_shape_as_payment_rejected() {
         let body = br#"{"success":false,"error":"MPP payment failed: Payment verification failed: Missing or invalid parameters. URL: https://rpc.mainnet.tempo.xyz Request body: {\"method\":\"eth_sendRawTransactionSync\"}"}"#;
         let resp = HttpResponse::for_test(402, body);
+        let err = parse_payment_rejection(&resp);
+        assert!(matches!(err, PaymentError::PaymentRejected { .. }));
+    }
+
+    #[test]
+    fn test_parse_payment_rejection_keeps_payment_proof_invalid_as_payment_rejected() {
+        let resp = HttpResponse::for_test(
+            400,
+            br#"{"error":"payment_proof_invalid","message":"invalid payment proof"}"#,
+        );
         let err = parse_payment_rejection(&resp);
         assert!(matches!(err, PaymentError::PaymentRejected { .. }));
     }
