@@ -242,10 +242,10 @@ pub enum PaymentError {
     },
     #[error("Payment rejected by server: {reason}")]
     PaymentRejected { reason: String, status_code: u16 },
-    #[error("Paid request failed with upstream application error: {reason}")]
-    UpstreamApplicationError { reason: String, status_code: u16 },
-    #[error("Paid request failed with upstream server error: {reason}")]
-    UpstreamServerError { reason: String, status_code: u16 },
+    #[error("Payment response failed at application layer: {reason}")]
+    PaymentResponseApplicationError { reason: String, status_code: u16 },
+    #[error("Payment response failed at server layer: {reason}")]
+    PaymentResponseServerError { reason: String, status_code: u16 },
     #[error("Transaction reverted: {0}")]
     TransactionReverted(String),
     #[error("Channel {channel_id} not found on {network}")]
@@ -415,26 +415,26 @@ mod tests {
     }
 
     #[test]
-    fn test_upstream_application_error_display() {
-        let err = PaymentError::UpstreamApplicationError {
+    fn test_payment_response_application_error_display() {
+        let err = PaymentError::PaymentResponseApplicationError {
             reason: "missing query parameter".to_string(),
             status_code: 400,
         };
         assert_eq!(
             err.to_string(),
-            "Paid request failed with upstream application error: missing query parameter"
+            "Payment response failed at application layer: missing query parameter"
         );
     }
 
     #[test]
-    fn test_upstream_server_error_display() {
-        let err = PaymentError::UpstreamServerError {
+    fn test_payment_response_server_error_display() {
+        let err = PaymentError::PaymentResponseServerError {
             reason: "gateway timeout".to_string(),
             status_code: 502,
         };
         assert_eq!(
             err.to_string(),
-            "Paid request failed with upstream server error: gateway timeout"
+            "Payment response failed at server layer: gateway timeout"
         );
     }
 
