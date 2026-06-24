@@ -13,6 +13,9 @@
 <br>
 <br>
 
+> [!WARNING]
+> This repo is now deprecated -- for the current wallet CLI please see https://github.com/tempoxyz/wallet-cli
+
 # Tempo Wallet
 
 **Command-line wallet and HTTP client for the [Tempo](https://tempo.xyz) blockchain, with built-in [Machine Payments Protocol](https://mpp.dev) support.**
