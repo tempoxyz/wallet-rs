@@ -43,13 +43,20 @@ enum SessionRequestFailureKind {
 }
 
 struct SessionRequestFailure {
-    source: TempoError,
+    source: Box<TempoError>,
     kind: SessionRequestFailureKind,
 }
 
 impl SessionRequestFailure {
+    fn new(source: impl Into<TempoError>, kind: SessionRequestFailureKind) -> Self {
+        Self {
+            source: Box::new(source.into()),
+            kind,
+        }
+    }
+
     fn into_tempo(self) -> TempoError {
-        self.source
+        *self.source
     }
 }
 
@@ -570,32 +577,26 @@ async fn send_session_request(
     ctx: &ChannelContext<'_>,
     state: &mut ChannelState,
 ) -> Result<PaymentResult, SessionRequestFailure> {
-    validate_request_spend_limit(state, ctx.network_id, state.cumulative_amount).map_err(
-        |source| SessionRequestFailure {
-            source,
-            kind: SessionRequestFailureKind::Other,
-        },
-    )?;
+    validate_request_spend_limit(state, ctx.network_id, state.cumulative_amount)
+        .map_err(|source| SessionRequestFailure::new(source, SessionRequestFailureKind::Other))?;
 
     let mut attempted_non_stream_top_up = false;
     let request_idempotency_key = new_idempotency_key();
     loop {
         let voucher_credential = build_voucher_credential(ctx.signer, ctx.echo, ctx.did, state)
             .await
-            .map_err(|source| SessionRequestFailure {
-                source,
-                kind: SessionRequestFailureKind::Other,
+            .map_err(|source| {
+                SessionRequestFailure::new(source, SessionRequestFailureKind::Other)
             })?;
 
         let voucher_auth = mpp::format_authorization(&voucher_credential).map_err(|source| {
-            SessionRequestFailure {
-                source: PaymentError::ChallengeFormatSource {
+            SessionRequestFailure::new(
+                PaymentError::ChallengeFormatSource {
                     context: "voucher credential",
                     source: Box::new(source),
-                }
-                .into(),
-                kind: SessionRequestFailureKind::Other,
-            }
+                },
+                SessionRequestFailureKind::Other,
+            )
         })?;
 
         let mut data_request = ctx
@@ -613,9 +614,8 @@ async fn send_session_request(
             .send()
             .await
             .map_err(NetworkError::Reqwest)
-            .map_err(|source| SessionRequestFailure {
-                source: source.into(),
-                kind: SessionRequestFailureKind::Other,
+            .map_err(|source| {
+                SessionRequestFailure::new(source, SessionRequestFailureKind::Other)
             })?;
 
         let status = response.status();
@@ -631,9 +631,8 @@ async fn send_session_request(
                             | SessionProblemType::AmountExceedsDeposit
                     ) {
                         validate_problem_channel_id(&problem, state.channel_id).map_err(
-                            |source| SessionRequestFailure {
-                                source,
-                                kind: SessionRequestFailureKind::Other,
+                            |source| {
+                                SessionRequestFailure::new(source, SessionRequestFailureKind::Other)
                             },
                         )?;
 
@@ -642,9 +641,11 @@ async fn send_session_request(
                         let required_top_up =
                             if let Some(value) = problem.required_top_up.as_deref() {
                                 parse_positive_problem_amount(value, "session top-up requiredTopUp")
-                                    .map_err(|source| SessionRequestFailure {
-                                        source,
-                                        kind: SessionRequestFailureKind::Other,
+                                    .map_err(|source| {
+                                        SessionRequestFailure::new(
+                                            source,
+                                            SessionRequestFailureKind::Other,
+                                        )
                                     })?
                             } else {
                                 state.cumulative_amount.saturating_sub(state.deposit).max(1)
@@ -660,8 +661,8 @@ async fn send_session_request(
                         if additional_deposit == 0 {
                             let required_cumulative = state.deposit.saturating_add(required_top_up);
                             if let Some(max_cumulative_spend) = state.max_cumulative_spend {
-                                return Err(SessionRequestFailure {
-                                    source: PaymentError::PaymentRejected {
+                                return Err(SessionRequestFailure::new(
+                                    PaymentError::PaymentRejected {
                                         reason: format!(
                                             "Payment max spend exceeded: max={} required={}",
                                             format_token_amount(
@@ -674,23 +675,21 @@ async fn send_session_request(
                                             ),
                                         ),
                                         status_code: 402,
-                                    }
-                                    .into(),
-                                    kind: SessionRequestFailureKind::Other,
-                                });
+                                    },
+                                    SessionRequestFailureKind::Other,
+                                ));
                             }
 
-                            return Err(SessionRequestFailure {
-                                source: PaymentError::DepositInsufficient {
+                            return Err(SessionRequestFailure::new(
+                                PaymentError::DepositInsufficient {
                                     deposit: format_token_amount(state.deposit, ctx.network_id),
                                     amount: format_token_amount(
                                         required_cumulative,
                                         ctx.network_id,
                                     ),
-                                }
-                                .into(),
-                                kind: SessionRequestFailureKind::Other,
-                            });
+                                },
+                                SessionRequestFailureKind::Other,
+                            ));
                         }
 
                         match run_non_streaming_top_up_recovery(ctx, state, additional_deposit)
@@ -703,10 +702,10 @@ async fn send_session_request(
                             Err(source) => {
                                 // Top-up tx failed (e.g. channel closed on-chain).
                                 // Signal invalidation so the caller can re-open.
-                                return Err(SessionRequestFailure {
+                                return Err(SessionRequestFailure::new(
                                     source,
-                                    kind: SessionRequestFailureKind::ChannelInvalidated,
-                                });
+                                    SessionRequestFailureKind::ChannelInvalidated,
+                                ));
                             }
                         }
                     }
@@ -714,10 +713,10 @@ async fn send_session_request(
             }
 
             let failure_kind = classify_session_failure(status.as_u16(), &body);
-            return Err(SessionRequestFailure {
-                source: payment_rejected_from_body(status.as_u16(), &body),
-                kind: failure_kind,
-            });
+            return Err(SessionRequestFailure::new(
+                payment_rejected_from_body(status.as_u16(), &body),
+                failure_kind,
+            ));
         }
 
         let is_sse = response
@@ -731,9 +730,8 @@ async fn send_session_request(
         if is_sse {
             streaming::stream_sse_response(ctx, state, response)
                 .await
-                .map_err(|source| SessionRequestFailure {
-                    source,
-                    kind: SessionRequestFailureKind::Other,
+                .map_err(|source| {
+                    SessionRequestFailure::new(source, SessionRequestFailureKind::Other)
                 })?;
             return Ok(PaymentResult {
                 tx_hash: None,
@@ -745,16 +743,12 @@ async fn send_session_request(
 
         let http_response = HttpResponse::from_reqwest(response)
             .await
-            .map_err(|source| SessionRequestFailure {
-                source,
-                kind: SessionRequestFailureKind::Other,
+            .map_err(|source| {
+                SessionRequestFailure::new(source, SessionRequestFailureKind::Other)
             })?;
         let status_code = http_response.status_code;
         let tx_hash = apply_response_receipt(&http_response, state, "session response").map_err(
-            |source| SessionRequestFailure {
-                source,
-                kind: SessionRequestFailureKind::Other,
-            },
+            |source| SessionRequestFailure::new(source, SessionRequestFailureKind::Other),
         )?;
 
         return Ok(PaymentResult {
