@@ -5,7 +5,7 @@ name: Changelog Generate
 # definition comes from the base branch (can't be modified by the fork) and
 # we never execute code from the PR — we only read the diff.
 on:
-  pull_request_target:
+  pull_request_target: # zizmor: ignore[dangerous-triggers]
     types: [labeled]
 
 concurrency: ${{ github.workflow }}-${{ github.event.number }}
@@ -101,7 +101,7 @@ jobs:
 
       - name: Install claude
         if: steps.source.outputs.same_repo == 'true' && steps.existing.outputs.found == 'false'
-        run: npm install -g @anthropic-ai/claude-code@1.0.3
+        run: npm install -g @anthropic-ai/claude-code@1.0.3 # zizmor: ignore[adhoc-packages]
 
       - name: Extract bump level from label
         if: steps.source.outputs.same_repo == 'true' && steps.existing.outputs.found == 'false'
