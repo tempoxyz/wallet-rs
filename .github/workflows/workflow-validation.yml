@@ -19,29 +19,13 @@ concurrency:
 jobs:
   actionlint:
     name: actionlint
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
     permissions:
+      actions: read
       contents: read
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          persist-credentials: false
-      - name: Install actionlint
-        run: |
-          set -euo pipefail
-          version=1.7.8
-          expected_sha256="be92c2652ab7b6d08425428797ceabeb16e31a781c07bc388456b4e592f3e36a"
-          curl -fsSL "https://github.com/rhysd/actionlint/releases/download/v${version}/actionlint_${version}_linux_amd64.tar.gz" -o /tmp/actionlint.tgz
-          actual_sha256=$(sha256sum /tmp/actionlint.tgz | cut -d' ' -f1)
-          if [ "$actual_sha256" != "$expected_sha256" ]; then
-            echo "::error::actionlint checksum mismatch: expected $expected_sha256, got $actual_sha256"
-            exit 1
-          fi
-          tar -xzf /tmp/actionlint.tgz -C /tmp
-          sudo mv /tmp/actionlint /usr/local/bin/actionlint
-      - name: Run actionlint
-        run: actionlint -color
+    uses: tempoxyz/gh-actions/.github/workflows/scan-github-actions.yml@483bda4a2a4b5e04a51edff03768c1590d271f80
+    with:
+      actionlint: true
+      pinact: true
 
   workflow-policy:
     name: workflow policy
