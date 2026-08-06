@@ -49,7 +49,7 @@ jobs:
           client-id: ${{ vars.RELEASE_BOT_APP_ID || secrets.RELEASE_BOT_APP_ID }}
           private-key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
           owner: tempoxyz
-          repositories: wallet
+          repositories: wallet-rs
           permission-contents: write
           permission-pull-requests: write
           permission-metadata: read
