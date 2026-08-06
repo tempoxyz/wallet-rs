@@ -1,11 +1,7 @@
 name: Changelog Generate
 
-# pull_request_target runs in the context of the base branch, giving access
-# to secrets even for fork PRs. This is safe here because the workflow
-# definition comes from the base branch (can't be modified by the fork) and
-# we never execute code from the PR — we only read the diff.
 on:
-  pull_request_target: # zizmor: ignore[dangerous-triggers]
+  pull_request:
     types: [labeled]
 
 concurrency: ${{ github.workflow }}-${{ github.event.number }}
@@ -14,7 +10,7 @@ permissions: {}
 
 jobs:
   generate:
-    if: startsWith(github.event.label.name, 'changelog:')
+    if: startsWith(github.event.label.name, 'changelog:') && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     environment: release
     permissions: {}

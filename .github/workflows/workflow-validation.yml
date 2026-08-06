@@ -22,7 +22,7 @@ jobs:
     permissions:
       actions: read
       contents: read
-    uses: tempoxyz/gh-actions/.github/workflows/scan-github-actions.yml@483bda4a2a4b5e04a51edff03768c1590d271f80
+    uses: tempoxyz/gh-actions/.github/workflows/scan-github-actions.yml@483bda4a2a4b5e04a51edff03768c1590d271f80 # v1
     with:
       actionlint: true
       pinact: true
@@ -61,15 +61,13 @@ jobs:
           fi
           grep -n "contains(fromJson('\[\"OWNER\",\"MEMBER\",\"COLLABORATOR\"\]'), github.event.comment.author_association)" .github/workflows/pr-audit.yml >/dev/null
 
-          echo "Checking pull_request_target hardening..."
-          grep -n "pull_request_target:" .github/workflows/changelog-generate.yml >/dev/null
-          grep -n "if: steps.source.outputs.same_repo == 'true'" .github/workflows/changelog-generate.yml >/dev/null
-          # The push must go to the validated branch ref via an authenticated URL
-          # (App-token), since persist-credentials=false on the checkout step.
-          grep -n "git push \"https://x-access-token:\${APP_TOKEN}@github.com/\${GITHUB_REPOSITORY}.git\" \"HEAD:" .github/workflows/changelog-generate.yml >/dev/null
-          if grep -n "git checkout -b \$\{\{ github.event.pull_request.head.ref \}\}" .github/workflows/changelog-generate.yml; then
-            echo "::error::Unsafe branch checkout pattern detected in changelog generation workflow."
+          echo "Checking fork-safe changelog generation..."
+          if grep -n "pull_request_target:" .github/workflows/changelog-generate.yml; then
+            echo "::error::Changelog generation must not use pull_request_target."
             exit 1
           fi
+          grep -n "^  pull_request:" .github/workflows/changelog-generate.yml >/dev/null
+          grep -n "github.event.pull_request.head.repo.full_name == github.repository" .github/workflows/changelog-generate.yml >/dev/null
+          grep -n "For fork PRs, please add a changelog file manually" .github/workflows/changelog-generate.yml >/dev/null
 
           echo "Workflow policy checks passed."

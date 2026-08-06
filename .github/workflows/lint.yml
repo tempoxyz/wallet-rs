@@ -18,7 +18,7 @@ jobs:
     name: rust lint
     permissions:
       contents: read
-    uses: tempoxyz/gh-actions/.github/workflows/rust-lint.yml@483bda4a2a4b5e04a51edff03768c1590d271f80
+    uses: tempoxyz/gh-actions/.github/workflows/rust-lint.yml@483bda4a2a4b5e04a51edff03768c1590d271f80 # v1
     with:
       clippy-runner: ubuntu-latest
       fmt-runner: ubuntu-latest
