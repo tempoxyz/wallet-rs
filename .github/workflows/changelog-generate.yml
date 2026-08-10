@@ -157,20 +157,11 @@ jobs:
   pr-feedback:
     name: PR feedback
     needs: generate
-    if: always() && startsWith(github.event.label.name, 'changelog:')
+    if: always() && startsWith(github.event.label.name, 'changelog:') && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     permissions:
       pull-requests: write
     steps:
-      - name: Comment for fork PRs
-        if: github.event.pull_request.head.repo.full_name != github.repository
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ github.event.number }}
-          REPO: ${{ github.repository }}
-        run: |
-          gh pr comment "$PR_NUMBER" --repo "$REPO" --body "Changelog auto-generation is only supported for same-repo branches. For fork PRs, please add a changelog file manually under .changelog/."
-
       - name: Remove label
         if: always()
         env:

@@ -7,10 +7,12 @@ on:
     branches: [main, master]
     paths:
       - .github/workflows/**
+      - .pinact.yaml
   pull_request:
     branches: [main, master]
     paths:
       - .github/workflows/**
+      - .pinact.yaml
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
@@ -68,6 +70,12 @@ jobs:
           fi
           grep -n "^  pull_request:" .github/workflows/changelog-generate.yml >/dev/null
           grep -n "github.event.pull_request.head.repo.full_name == github.repository" .github/workflows/changelog-generate.yml >/dev/null
-          grep -n "For fork PRs, please add a changelog file manually" .github/workflows/changelog-generate.yml >/dev/null
+          grep -n "^  pull_request_target:" .github/workflows/changelog-fork-feedback.yml >/dev/null
+          grep -n "github.event.pull_request.head.repo.full_name != github.repository" .github/workflows/changelog-fork-feedback.yml >/dev/null
+          grep -n "For fork PRs, please add a changelog file manually" .github/workflows/changelog-fork-feedback.yml >/dev/null
+          if grep -n "actions/checkout" .github/workflows/changelog-fork-feedback.yml; then
+            echo "::error::Fork feedback workflow must not check out PR-controlled content."
+            exit 1
+          fi
 
           echo "Workflow policy checks passed."
