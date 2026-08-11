@@ -1,0 +1,9 @@
+version: 3
+
+rules:
+  # Shared workflows are pinned to immutable commits, but gh-actions does not
+  # publish tags that pinact can use to verify their origin or release age.
+  - ignore: true
+    conditions:
+      - expr: |
+          ActionRepoFullName == "tempoxyz/gh-actions"

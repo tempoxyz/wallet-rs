@@ -7,10 +7,12 @@ on:
     branches: [main, master]
     paths:
       - .github/workflows/**
+      - .pinact.yaml
   pull_request:
     branches: [main, master]
     paths:
       - .github/workflows/**
+      - .pinact.yaml
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
@@ -19,29 +21,13 @@ concurrency:
 jobs:
   actionlint:
     name: actionlint
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
     permissions:
+      actions: read
       contents: read
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          persist-credentials: false
-      - name: Install actionlint
-        run: |
-          set -euo pipefail
-          version=1.7.8
-          expected_sha256="be92c2652ab7b6d08425428797ceabeb16e31a781c07bc388456b4e592f3e36a"
-          curl -fsSL "https://github.com/rhysd/actionlint/releases/download/v${version}/actionlint_${version}_linux_amd64.tar.gz" -o /tmp/actionlint.tgz
-          actual_sha256=$(sha256sum /tmp/actionlint.tgz | cut -d' ' -f1)
-          if [ "$actual_sha256" != "$expected_sha256" ]; then
-            echo "::error::actionlint checksum mismatch: expected $expected_sha256, got $actual_sha256"
-            exit 1
-          fi
-          tar -xzf /tmp/actionlint.tgz -C /tmp
-          sudo mv /tmp/actionlint /usr/local/bin/actionlint
-      - name: Run actionlint
-        run: actionlint -color
+    uses: tempoxyz/gh-actions/.github/workflows/scan-github-actions.yml@183a02178c660ce295e9a262edc5857cb7135f06 # v1
+    with:
+      actionlint: true
+      pinact: true
 
   workflow-policy:
     name: workflow policy
@@ -77,14 +63,18 @@ jobs:
           fi
           grep -n "contains(fromJson('\[\"OWNER\",\"MEMBER\",\"COLLABORATOR\"\]'), github.event.comment.author_association)" .github/workflows/pr-audit.yml >/dev/null
 
-          echo "Checking pull_request_target hardening..."
-          grep -n "pull_request_target:" .github/workflows/changelog-generate.yml >/dev/null
-          grep -n "if: steps.source.outputs.same_repo == 'true'" .github/workflows/changelog-generate.yml >/dev/null
-          # The push must go to the validated branch ref via an authenticated URL
-          # (App-token), since persist-credentials=false on the checkout step.
-          grep -n "git push \"https://x-access-token:\${APP_TOKEN}@github.com/\${GITHUB_REPOSITORY}.git\" \"HEAD:" .github/workflows/changelog-generate.yml >/dev/null
-          if grep -n "git checkout -b \$\{\{ github.event.pull_request.head.ref \}\}" .github/workflows/changelog-generate.yml; then
-            echo "::error::Unsafe branch checkout pattern detected in changelog generation workflow."
+          echo "Checking fork-safe changelog generation..."
+          if grep -n "pull_request_target:" .github/workflows/changelog-generate.yml; then
+            echo "::error::Changelog generation must not use pull_request_target."
+            exit 1
+          fi
+          grep -n "^  pull_request:" .github/workflows/changelog-generate.yml >/dev/null
+          grep -n "github.event.pull_request.head.repo.full_name == github.repository" .github/workflows/changelog-generate.yml >/dev/null
+          grep -n "^  pull_request_target:" .github/workflows/changelog-fork-feedback.yml >/dev/null
+          grep -n "github.event.pull_request.head.repo.full_name != github.repository" .github/workflows/changelog-fork-feedback.yml >/dev/null
+          grep -n "For fork PRs, please add a changelog file manually" .github/workflows/changelog-fork-feedback.yml >/dev/null
+          if grep -n "actions/checkout" .github/workflows/changelog-fork-feedback.yml; then
+            echo "::error::Fork feedback workflow must not check out PR-controlled content."
             exit 1
           fi
 

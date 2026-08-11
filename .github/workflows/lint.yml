@@ -13,48 +13,20 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
-env:
-  CARGO_TERM_COLOR: always
-  CARGO_NET_GIT_FETCH_WITH_CLI: "true"
-  RUST_BACKTRACE: full
-
 jobs:
-  clippy:
-    name: clippy
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
+  rust-lint:
+    name: rust lint
     permissions:
       contents: read
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          persist-credentials: false
-      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # nightly
-        with:
-          toolchain: nightly
-          components: clippy
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
-      - name: Run clippy
-        run: cargo clippy --workspace --all-targets --all-features --locked
-        env:
-          RUSTFLAGS: -D warnings
-
-  fmt:
-    name: fmt
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          persist-credentials: false
-      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # nightly
-        with:
-          toolchain: nightly
-          components: rustfmt
-      - name: Check formatting
-        run: cargo fmt --all -- --check
+    uses: tempoxyz/gh-actions/.github/workflows/rust-lint.yml@183a02178c660ce295e9a262edc5857cb7135f06 # v1
+    with:
+      clippy-runner: ubuntu-latest
+      fmt-runner: ubuntu-latest
+      typos-runner: ubuntu-latest
+      deny-runner: ubuntu-latest
+      rust-toolchain: nightly
+      clippy-flags: --workspace --all-targets --all-features --locked
+      deny-flags: ""
 
   tempo-lints:
     name: tempo-lints
@@ -90,46 +62,14 @@ jobs:
           pnpm --dir "$lints_dir" install --frozen-lockfile
           pnpm --dir "$lints_dir" exec tsx "$lints_dir/bin/tempo-lints.ts" rust "$GITHUB_WORKSPACE" --github-action
 
-  typos:
-    name: typos
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          persist-credentials: false
-      - uses: crate-ci/typos@f8a58b6b53f2279f71eb605f03a4ae4d10608f45 # v1.47.0
-
-  deny:
-    name: deny
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          persist-credentials: false
-      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
-      - uses: taiki-e/install-action@873c7452cadb7c034694a1282227095d93fbdf92 # v2.79.14
-        with:
-          tool: cargo-deny
-      - name: Run cargo deny
-        run: cargo deny check
-
   lint-success:
     name: lint success
     runs-on: ubuntu-latest
     if: always()
     permissions: {}
     needs:
-      - clippy
-      - fmt
+      - rust-lint
       - tempo-lints
-      - typos
-      - deny
     timeout-minutes: 30
     steps:
       - name: Decide whether the needed jobs succeeded or failed

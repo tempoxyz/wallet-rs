@@ -1,11 +1,7 @@
 name: Changelog Generate
 
-# pull_request_target runs in the context of the base branch, giving access
-# to secrets even for fork PRs. This is safe here because the workflow
-# definition comes from the base branch (can't be modified by the fork) and
-# we never execute code from the PR — we only read the diff.
 on:
-  pull_request_target:
+  pull_request:
     types: [labeled]
 
 concurrency: ${{ github.workflow }}-${{ github.event.number }}
@@ -14,7 +10,7 @@ permissions: {}
 
 jobs:
   generate:
-    if: startsWith(github.event.label.name, 'changelog:')
+    if: startsWith(github.event.label.name, 'changelog:') && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     environment: release
     permissions: {}
@@ -53,7 +49,7 @@ jobs:
           client-id: ${{ vars.RELEASE_BOT_APP_ID || secrets.RELEASE_BOT_APP_ID }}
           private-key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
           owner: tempoxyz
-          repositories: wallet
+          repositories: wallet-rs
           permission-contents: write
           permission-pull-requests: write
           permission-metadata: read
@@ -101,7 +97,7 @@ jobs:
 
       - name: Install claude
         if: steps.source.outputs.same_repo == 'true' && steps.existing.outputs.found == 'false'
-        run: npm install -g @anthropic-ai/claude-code@1.0.3
+        run: npm install -g @anthropic-ai/claude-code@1.0.3 # zizmor: ignore[adhoc-packages]
 
       - name: Extract bump level from label
         if: steps.source.outputs.same_repo == 'true' && steps.existing.outputs.found == 'false'
@@ -161,20 +157,11 @@ jobs:
   pr-feedback:
     name: PR feedback
     needs: generate
-    if: always() && startsWith(github.event.label.name, 'changelog:')
+    if: always() && startsWith(github.event.label.name, 'changelog:') && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     permissions:
       pull-requests: write
     steps:
-      - name: Comment for fork PRs
-        if: github.event.pull_request.head.repo.full_name != github.repository
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ github.event.number }}
-          REPO: ${{ github.repository }}
-        run: |
-          gh pr comment "$PR_NUMBER" --repo "$REPO" --body "Changelog auto-generation is only supported for same-repo branches. For fork PRs, please add a changelog file manually under .changelog/."
-
       - name: Remove label
         if: always()
         env:
