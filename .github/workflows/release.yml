@@ -7,7 +7,8 @@ on:
 
 concurrency: ${{ github.workflow }}-${{ github.ref }}
 
-permissions: {}
+permissions:
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -26,11 +27,10 @@ jobs:
         id: release-bot
         run: |
           if [ -z "${RELEASE_BOT_APP_ID}" ] || [ -z "${RELEASE_BOT_PRIVATE_KEY}" ]; then
-            echo "configured=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::Release bot credentials are not configured; skipping release PR automation."
-          else
-            echo "configured=true" >> "$GITHUB_OUTPUT"
+            echo "::error::Release bot credentials are not configured in the release environment. Set RELEASE_BOT_APP_ID and RELEASE_BOT_PRIVATE_KEY so changelogs can create release PRs, tags, and GitHub releases."
+            exit 1
           fi
+          echo "configured=true" >> "$GITHUB_OUTPUT"
 
       - name: Mint scoped app token
         if: steps.release-bot.outputs.configured == 'true'
