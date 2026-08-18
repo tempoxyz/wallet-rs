@@ -3,6 +3,7 @@
 use mpp::protocol::methods::tempo::TempoChargeExt;
 
 use crate::{
+    args::PaymentIntent,
     http::HttpResponse,
     payment::challenge::{decode_session_request, require_session_chain_id},
 };
@@ -221,16 +222,28 @@ fn format_held(keystore: &Keystore) -> String {
 /// 3. Drop entries the wallet cannot satisfy (no key for that `(network,
 ///    currency)` pair). Empty and ephemeral keystores skip this pass to
 ///    preserve current behavior for unauthenticated and `--private-key` flows.
-/// 4. Return the first survivor in server order.
+/// 4. In auto mode, prefer a session and otherwise return the first survivor.
+///    Explicit modes require the matching intent.
 ///
 /// Errors:
 /// - `UnsupportedPaymentMethod` if no candidate survives step 1.
 /// - `NoCompatibleChallenge` if at least one candidate exists but none survive
 ///   steps 2–3.
+#[cfg(test)]
 pub(crate) fn parse_payment_challenge(
     response: &HttpResponse,
     keystore: &Keystore,
     configured_network: Option<NetworkId>,
+) -> Result<ParsedChallenge, TempoError> {
+    parse_payment_challenge_for_intent(response, keystore, configured_network, PaymentIntent::Auto)
+}
+
+/// Parse and select a challenge matching the requested payment intent.
+pub(crate) fn parse_payment_challenge_for_intent(
+    response: &HttpResponse,
+    keystore: &Keystore,
+    configured_network: Option<NetworkId>,
+    payment_intent: PaymentIntent,
 ) -> Result<ParsedChallenge, TempoError> {
     let values = response.headers_all("www-authenticate");
     if values.is_empty() {
@@ -292,13 +305,35 @@ pub(crate) fn parse_payment_challenge(
         return Err(PaymentError::UnsupportedPaymentMethod(methods.join(", ")).into());
     }
 
-    let chosen = candidates.iter().find(|c| {
+    let compatible = |c: &ParsedChallenge| {
         configured_network.is_none_or(|n| n == c.network)
             && keystore.has_key_for_network_and_currency(c.network, &c.currency)
-    });
+    };
+    let chosen = match payment_intent {
+        PaymentIntent::Auto => candidates
+            .iter()
+            .filter(|c| compatible(c))
+            .find(|c| c.is_session)
+            .or_else(|| candidates.iter().find(|c| compatible(c))),
+        PaymentIntent::Charge => candidates
+            .iter()
+            .filter(|c| compatible(c))
+            .find(|c| !c.is_session),
+        PaymentIntent::Session => candidates
+            .iter()
+            .filter(|c| compatible(c))
+            .find(|c| c.is_session),
+    };
 
     if let Some(c) = chosen {
         return Ok(c.clone());
+    }
+
+    if payment_intent != PaymentIntent::Auto && candidates.iter().any(compatible) {
+        return Err(PaymentError::PaymentIntentUnavailable {
+            requested: payment_intent.as_str().to_string(),
+        }
+        .into());
     }
 
     Err(PaymentError::NoCompatibleChallenge {
@@ -475,6 +510,77 @@ mod tests {
             }))
             .unwrap(),
         )
+    }
+
+    fn tempo_session_challenge(id: &str, chain_id: u64, currency: &str) -> mpp::PaymentChallenge {
+        mpp::PaymentChallenge::new(
+            id,
+            "realm",
+            "tempo",
+            "session",
+            mpp::Base64UrlJson::from_value(&serde_json::json!({
+                "amount": "1000",
+                "currency": currency,
+                "recipient": "0x1111111111111111111111111111111111111111",
+                "methodDetails": {
+                    "chainId": chain_id,
+                    "escrowContract": "0x20c0000000000000000000000000000000000001"
+                }
+            }))
+            .unwrap(),
+        )
+    }
+
+    #[test]
+    fn test_payment_intent_selects_session_or_charge() {
+        let charge = tempo_charge_challenge("charge", 4217, USDC_E);
+        let session = tempo_session_challenge("session", 4217, USDC_E);
+        let merged = format!(
+            "{}, {}",
+            mpp::format_www_authenticate(&charge).unwrap(),
+            mpp::format_www_authenticate(&session).unwrap(),
+        );
+        let response =
+            HttpResponse::for_test_with_headers(402, b"", &[("www-authenticate", &merged)]);
+        let keystore = keystore_with_key(4217, USDC_E);
+
+        let auto =
+            parse_payment_challenge_for_intent(&response, &keystore, None, PaymentIntent::Auto)
+                .unwrap();
+        let charge =
+            parse_payment_challenge_for_intent(&response, &keystore, None, PaymentIntent::Charge)
+                .unwrap();
+        let session =
+            parse_payment_challenge_for_intent(&response, &keystore, None, PaymentIntent::Session)
+                .unwrap();
+
+        assert_eq!(auto.challenge.id, "session");
+        assert_eq!(charge.challenge.id, "charge");
+        assert_eq!(session.challenge.id, "session");
+    }
+
+    #[test]
+    fn test_explicit_payment_intent_requires_matching_offer() {
+        let session = tempo_session_challenge("session", 4217, USDC_E);
+        let header = mpp::format_www_authenticate(&session).unwrap();
+        let response =
+            HttpResponse::for_test_with_headers(402, b"", &[("www-authenticate", &header)]);
+        let keystore = keystore_with_key(4217, USDC_E);
+
+        let err = match parse_payment_challenge_for_intent(
+            &response,
+            &keystore,
+            None,
+            PaymentIntent::Charge,
+        ) {
+            Ok(_) => panic!("expected charge intent to be unavailable"),
+            Err(err) => err,
+        };
+
+        assert_eq!(
+            err.to_string(),
+            "Server did not offer the requested 'charge' payment intent"
+        );
     }
 
     /// Build a keystore with a single key configured for `(chain_id, currency)`.

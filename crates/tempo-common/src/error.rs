@@ -242,6 +242,10 @@ pub enum PaymentError {
     },
     #[error("Payment rejected by server: {reason}")]
     PaymentRejected { reason: String, status_code: u16 },
+    #[error(
+        "Session payment failed: {reason}\nA one-time charge of {amount} is available but was not submitted because charge capacity is non-refundable. Review the amount, then retry with '--payment-intent charge'."
+    )]
+    ChargeFallbackAvailable { reason: String, amount: String },
     #[error("Transaction reverted: {0}")]
     TransactionReverted(String),
     #[error("Channel {channel_id} not found on {network}")]
@@ -256,6 +260,8 @@ pub enum PaymentError {
     UnsupportedPaymentMethod(String),
     #[error("Unsupported payment intent: {0}")]
     UnsupportedPaymentIntent(String),
+    #[error("Server did not offer the requested '{requested}' payment intent")]
+    PaymentIntentUnavailable { requested: String },
     #[error("Invalid challenge: {0}")]
     InvalidChallenge(String),
     #[error("Failed to parse {context}: {reason}")]

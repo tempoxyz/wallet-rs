@@ -1,6 +1,6 @@
 //! CLI argument definitions and parsing.
 
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 
 /// Long version string including git commit, build date, and profile.
 const LONG_VERSION: &str = concat!(
@@ -13,6 +13,29 @@ const LONG_VERSION: &str = concat!(
     env!("TEMPO_BUILD_PROFILE"),
     ")"
 );
+
+/// Payment intent selected from a multi-challenge response.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+pub(crate) enum PaymentIntent {
+    /// Prefer a session and require explicit consent before charge fallback.
+    #[default]
+    Auto,
+    /// Use only a one-time charge challenge.
+    Charge,
+    /// Use only a reusable session challenge.
+    Session,
+}
+
+impl PaymentIntent {
+    /// Stable command-line value used in diagnostics.
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Charge => "charge",
+            Self::Session => "session",
+        }
+    }
+}
 
 #[derive(Parser, Debug)]
 #[command(name = "tempo request")]
@@ -51,6 +74,15 @@ pub(crate) struct QueryArgs {
         help_heading = "Payment Options"
     )]
     pub max_spend: Option<String>,
+
+    /// Payment intent for multi-challenge responses
+    #[arg(
+        long = "payment-intent",
+        value_enum,
+        default_value_t,
+        help_heading = "Payment Options"
+    )]
+    pub payment_intent: PaymentIntent,
 
     /// Offline mode - fail immediately without making any network requests
     #[arg(long, help_heading = "HTTP Options")]
@@ -295,5 +327,35 @@ impl QueryArgs {
     /// Whether the request should use streaming mode (raw, SSE passthrough, or SSE→NDJSON).
     pub(crate) const fn is_streaming(&self) -> bool {
         self.stream || self.sse || self.sse_json
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn payment_intent_defaults_to_auto() {
+        let cli = Cli::try_parse_from(["tempo-request", "https://example.com"]).unwrap();
+        assert_eq!(cli.query.payment_intent, PaymentIntent::Auto);
+    }
+
+    #[test]
+    fn payment_intent_accepts_all_modes() {
+        let modes = ["auto", "session", "charge"]
+            .map(|mode| {
+                Cli::try_parse_from([
+                    "tempo-request",
+                    "--payment-intent",
+                    mode,
+                    "https://example.com",
+                ])
+                .unwrap()
+                .query
+                .payment_intent
+                .as_str()
+            })
+            .join(",");
+        assert_eq!(modes, "auto,session,charge");
     }
 }

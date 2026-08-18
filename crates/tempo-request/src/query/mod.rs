@@ -12,7 +12,7 @@ pub(crate) mod prepare;
 pub(crate) mod sse;
 
 use crate::{
-    args::QueryArgs,
+    args::{PaymentIntent, QueryArgs},
     payment::{router::dispatch_payment, types::PaymentResult},
 };
 use tempo_common::{
@@ -156,8 +156,26 @@ pub(crate) async fn run(ctx: &Context, query: QueryArgs) -> Result<(), TempoErro
         .unwrap_or(&target_url)
         .to_string();
 
-    let challenge =
-        challenge::parse_payment_challenge(&response, &ctx.keys, prepared.http.network)?;
+    let challenge = challenge::parse_payment_challenge_for_intent(
+        &response,
+        &ctx.keys,
+        prepared.http.network,
+        query.payment_intent,
+    )?;
+    let charge_fallback = if query.payment_intent == PaymentIntent::Auto && challenge.is_session {
+        challenge::parse_payment_challenge_for_intent(
+            &response,
+            &ctx.keys,
+            prepared.http.network,
+            PaymentIntent::Charge,
+        )
+        .ok()
+        .filter(|fallback| {
+            fallback.network == challenge.network && fallback.currency == challenge.currency
+        })
+    } else {
+        None
+    };
 
     if prepared.http.log_enabled() {
         eprintln!(
@@ -234,6 +252,17 @@ pub(crate) async fn run(ctx: &Context, query: QueryArgs) -> Result<(), TempoErro
         Err(e) => {
             let err = e;
             pay_analytics.track_failure(&err);
+            if let Some(fallback) = charge_fallback {
+                let max_spend =
+                    parse_max_spend(prepared.http.max_spend.as_deref(), fallback.network)?;
+                if enforce_max_spend(&fallback.amount, fallback.network, max_spend).is_ok() {
+                    return Err(PaymentError::ChargeFallbackAvailable {
+                        amount: fallback.amount_display(),
+                        reason: err.to_string(),
+                    }
+                    .into());
+                }
+            }
             Err(err)
         }
     }
