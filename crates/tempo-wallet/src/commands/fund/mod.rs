@@ -298,7 +298,9 @@ fn build_fund_url(auth_server_url: &str, target: &Target) -> Result<String, Temp
         source,
     })?;
 
-    url.set_path("/");
+    // The Tempo CLI is an agent/MPP surface, so all of its funding handoffs land on
+    // the dedicated /agent page rather than the consumer wallet home.
+    url.set_path("/agent");
     url.set_query(None);
 
     {
@@ -501,7 +503,7 @@ mod tests {
     fn build_fund_url_uses_expected_query_for_each_target() {
         assert_eq!(
             build_fund_url("https://wallet.moderato.tempo.xyz/cli-auth", &Target::Fund).unwrap(),
-            "https://wallet.moderato.tempo.xyz/?action=fund"
+            "https://wallet.moderato.tempo.xyz/agent?action=fund"
         );
         assert_eq!(
             build_fund_url(
@@ -509,7 +511,7 @@ mod tests {
                 &Target::Crypto
             )
             .unwrap(),
-            "https://wallet.moderato.tempo.xyz/?action=crypto"
+            "https://wallet.moderato.tempo.xyz/agent?action=crypto"
         );
         assert_eq!(
             build_fund_url(
@@ -517,7 +519,7 @@ mod tests {
                 &Target::Credits
             )
             .unwrap(),
-            "https://wallet.moderato.tempo.xyz/?action=fund&intent=credits"
+            "https://wallet.moderato.tempo.xyz/agent?action=fund&intent=credits"
         );
         assert_eq!(
             build_fund_url(
@@ -525,7 +527,7 @@ mod tests {
                 &Target::ReferralCode("ABC123".to_string())
             )
             .unwrap(),
-            "https://wallet.moderato.tempo.xyz/?claim=ABC123"
+            "https://wallet.moderato.tempo.xyz/agent?claim=ABC123"
         );
     }
 
