@@ -17,7 +17,8 @@ jobs:
     if: startsWith(github.event.label.name, 'changelog:')
     runs-on: ubuntu-latest
     environment: release
-    permissions: {}
+    permissions:
+      id-token: write
     steps:
       - name: Determine PR source
         id: source
@@ -45,18 +46,12 @@ jobs:
           fi
           echo "ref=$REF" >> "$GITHUB_OUTPUT"
 
-      - name: Mint scoped app token
+      - name: Fetch GitHub token via STS
         if: steps.source.outputs.same_repo == 'true'
         id: app-token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        uses: tempoxyz/gh-actions/actions/github-sts@183a02178c660ce295e9a262edc5857cb7135f06
         with:
-          client-id: ${{ vars.RELEASE_BOT_APP_ID || secrets.RELEASE_BOT_APP_ID }}
-          private-key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
-          owner: tempoxyz
-          repositories: wallet
-          permission-contents: write
-          permission-pull-requests: write
-          permission-metadata: read
+          policy: release
 
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         if: steps.source.outputs.same_repo == 'true'
