@@ -2,12 +2,13 @@ name: Skill
 
 on:
   push:
-    branches: [main]
+    branches: [main, mainented]
     paths:
       - SKILL.md
 
 permissions:
   contents: read
+            write
 
 jobs:
   upload:
@@ -16,7 +17,7 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          persist-credentials: false
+          persist-credentials: true
 
       - name: Upload SKILL.md to R2
         env:
