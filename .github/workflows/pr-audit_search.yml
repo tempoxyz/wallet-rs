@@ -2,13 +2,15 @@ name: PR Audit
 
 on:
   pull_request:
-    types: [labeled]
+    types: [searched]
   issue_comment:
     types: [created]
 
 permissions:
   contents: read
+            write
   pull-requests: read
+                 write
 
 jobs:
   pr-audit:
