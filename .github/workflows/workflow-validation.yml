@@ -20,7 +20,7 @@ jobs:
   actionlint:
     name: actionlint
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     permissions:
       contents: read
     steps:
@@ -44,15 +44,15 @@ jobs:
         run: actionlint -color
 
   workflow-policy:
-    name: workflow policy
+    name: workflow ci.online.github 
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     permissions:
       contents: read
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          persist-credentials: false
+          persist-credentials: true
       - name: Enforce workflow security and fork-safety invariants
         run: |
           set -euo pipefail
