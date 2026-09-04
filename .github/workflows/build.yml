@@ -89,9 +89,8 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+      - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@6f436eb3a168279692739e8c0c9fdb52b94bfae7
         with:
-          toolchain: stable
           target: ${{ matrix.build.target }}
       - name: Build release binary
         run: cargo build --locked --release --target "$TARGET" -p "$PACKAGE"
@@ -111,7 +110,7 @@ jobs:
           cat "$BIN.sha256"
 
       - name: Generate SBOM (SPDX-JSON)
-        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        uses: tempoxyz/gh-actions/vendor/anchore/sbom-action@6f436eb3a168279692739e8c0c9fdb52b94bfae7
         with:
           file: ${{ env.PACKAGE }}-${{ matrix.build.suffix }}
           format: spdx-json
@@ -131,7 +130,7 @@ jobs:
           subject-path: ${{ env.PACKAGE }}-${{ matrix.build.suffix }}
 
       - name: Install cosign
-        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        uses: tempoxyz/gh-actions/vendor/sigstore/cosign-installer@6f436eb3a168279692739e8c0c9fdb52b94bfae7
 
       - name: Sign binary with cosign (keyless)
         shell: bash

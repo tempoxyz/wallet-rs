@@ -1,0 +1,9 @@
+# Allow the jobs that run in the release environment (Release and
+# Changelog Generate) to mint a short-lived token to push release
+# automation commits and open or update pull requests. Replaces the
+# release-bot GitHub App credential wiring, which was never configured
+# for this repository.
+subject: repo:tempoxyz@211589300/wallet-rs@1136004681:environment:release
+permissions:
+  contents: write
+  pull_requests: write

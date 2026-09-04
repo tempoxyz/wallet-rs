@@ -18,7 +18,7 @@ jobs:
     name: rust lint
     permissions:
       contents: read
-    uses: tempoxyz/gh-actions/.github/workflows/rust-lint.yml@183a02178c660ce295e9a262edc5857cb7135f06 # v1
+    uses: tempoxyz/gh-actions/.github/workflows/rust-lint.yml@84404f82f267db9b96abab32a50bf835a524d8c7
     with:
       clippy-runner: ubuntu-latest
       fmt-runner: ubuntu-latest
@@ -73,6 +73,6 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Decide whether the needed jobs succeeded or failed
-        uses: re-actors/alls-green@05ac9388f0aebcb5727afa17fcccfecd6f8ec5fe # v1.2.2
+        uses: tempoxyz/gh-actions/actions/check-needs@ab45d76f6e7420a094281a22aee1973ecc0754f8
         with:
           jobs: ${{ toJSON(needs) }}

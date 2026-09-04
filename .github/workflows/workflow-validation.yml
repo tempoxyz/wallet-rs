@@ -24,7 +24,7 @@ jobs:
     permissions:
       actions: read
       contents: read
-    uses: tempoxyz/gh-actions/.github/workflows/scan-github-actions.yml@183a02178c660ce295e9a262edc5857cb7135f06 # v1
+    uses: tempoxyz/gh-actions/.github/workflows/scan-github-actions.yml@84404f82f267db9b96abab32a50bf835a524d8c7
     with:
       actionlint: true
       pinact: true
