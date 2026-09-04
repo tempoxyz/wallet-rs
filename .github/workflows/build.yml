@@ -83,6 +83,8 @@ jobs:
             suffix: darwin-arm64
     env:
       PACKAGE: ${{ matrix.package }}
+      TARGET: ${{ matrix.build.target }}
+      SUFFIX: ${{ matrix.build.suffix }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -91,9 +93,9 @@ jobs:
         with:
           target: ${{ matrix.build.target }}
       - name: Build release binary
-        run: cargo build --locked --release --target ${{ matrix.build.target }} -p ${{ env.PACKAGE }}
-      - run: strip target/${{ matrix.build.target }}/release/${{ env.PACKAGE }}
-      - run: mv target/${{ matrix.build.target }}/release/${{ env.PACKAGE }} ${{ env.PACKAGE }}-${{ matrix.build.suffix }}
+        run: cargo build --locked --release --target "$TARGET" -p "$PACKAGE"
+      - run: strip "target/$TARGET/release/$PACKAGE"
+      - run: mv "target/$TARGET/release/$PACKAGE" "$PACKAGE-$SUFFIX"
 
       - name: Generate sha256
         shell: bash

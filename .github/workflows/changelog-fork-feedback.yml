@@ -1,0 +1,34 @@
+name: Changelog Fork Feedback
+
+on:
+  pull_request_target: # zizmor: ignore[dangerous-triggers] no checkout or PR-controlled code execution
+    types: [labeled]
+
+concurrency: ${{ github.workflow }}-${{ github.event.number }}
+
+permissions: {}
+
+jobs:
+  pr-feedback:
+    name: PR feedback
+    if: startsWith(github.event.label.name, 'changelog:') && github.event.pull_request.head.repo.full_name != github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Comment with manual instructions
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          gh pr comment "$PR_NUMBER" --repo "$REPO" --body "Changelog auto-generation is only supported for same-repo branches. For fork PRs, please add a changelog file manually under .changelog/."
+
+      - name: Remove label
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.number }}
+          REPO: ${{ github.repository }}
+          LABEL: ${{ github.event.label.name }}
+        run: gh pr edit "$PR_NUMBER" --repo "$REPO" --remove-label "$LABEL"
