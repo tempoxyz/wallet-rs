@@ -19,7 +19,7 @@ jobs:
         github.event.issue.pull_request &&
         contains(fromJson('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)
       )
-    uses: tempoxyz/gh-actions/.github/workflows/pr-audit.yml@84404f82f267db9b96abab32a50bf835a524d8c7
+    uses: tempoxyz/gh-actions/.github/workflows/pr-audit.yml@dd1014bf8244fded7a501e701cafab240a4f9f0e
     secrets:
       EVENTS_KEY: ${{ secrets.EVENTS_KEY }}
       EVENTS_CERT: ${{ secrets.EVENTS_CERT }}
