@@ -678,7 +678,7 @@ async fn fund_no_browser_prints_remote_safe_handoff_copy_and_detects_balance_cha
 
     assert!(output.status.success(), "fund should succeed: {output:?}");
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert_remote_fund_handoff(&stderr, "https://wallet.tempo.xyz/?action=fund");
+    assert_remote_fund_handoff(&stderr, "https://wallet.tempo.xyz/agent?action=fund");
     assert!(rpc.balances.lock().unwrap().is_empty());
     assert_eq!(rpc.last_value.lock().unwrap().as_str(), "1000000");
 }
@@ -696,7 +696,7 @@ async fn fund_no_browser_json_prints_remote_handoff() {
 
     assert!(output.status.success(), "fund should succeed: {output:?}");
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert_remote_fund_handoff(&stderr, "https://wallet.tempo.xyz/?action=fund");
+    assert_remote_fund_handoff(&stderr, "https://wallet.tempo.xyz/agent?action=fund");
     assert!(rpc.balances.lock().unwrap().is_empty());
     assert_eq!(rpc.last_value.lock().unwrap().as_str(), "1000000");
 }
@@ -714,7 +714,7 @@ async fn fund_no_browser_toon_prints_remote_handoff() {
 
     assert!(output.status.success(), "fund should succeed: {output:?}");
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert_remote_fund_handoff(&stderr, "https://wallet.tempo.xyz/?action=fund");
+    assert_remote_fund_handoff(&stderr, "https://wallet.tempo.xyz/agent?action=fund");
     assert!(rpc.balances.lock().unwrap().is_empty());
     assert_eq!(rpc.last_value.lock().unwrap().as_str(), "1000000");
 }
@@ -735,7 +735,10 @@ async fn fund_no_browser_crypto_uses_direct_crypto_link() {
 
     assert!(output.status.success(), "fund should succeed: {output:?}");
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert_remote_fund_handoff(&stderr, "https://wallet.moderato.tempo.xyz/?action=crypto");
+    assert_remote_fund_handoff(
+        &stderr,
+        "https://wallet.moderato.tempo.xyz/agent?action=crypto",
+    );
     assert!(rpc.balances.lock().unwrap().is_empty());
     assert_eq!(rpc.last_value.lock().unwrap().as_str(), "1000000");
 }
@@ -763,7 +766,10 @@ async fn fund_no_browser_referral_code_uses_claim_link() {
 
     assert!(output.status.success(), "fund should succeed: {output:?}");
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert_remote_fund_handoff(&stderr, "https://wallet.moderato.tempo.xyz/?claim=ABC123");
+    assert_remote_fund_handoff(
+        &stderr,
+        "https://wallet.moderato.tempo.xyz/agent?claim=ABC123",
+    );
     assert!(rpc.balances.lock().unwrap().is_empty());
     assert_eq!(rpc.last_value.lock().unwrap().as_str(), "1000000");
 }
@@ -776,7 +782,7 @@ async fn fund_no_browser_credits_waits_for_credit_balance_change() {
     )
     .await;
     let temp = build_fund_temp(&rpc.base_url);
-    let expected_url = format!("{}/?action=fund&intent=credits", rpc.base_url);
+    let expected_url = format!("{}/agent?action=fund&intent=credits", rpc.base_url);
 
     let output = test_command(&temp)
         .env("TEMPO_AUTH_URL", rpc.auth_url())
@@ -856,7 +862,7 @@ async fn fund_default_flow_keeps_local_copy_and_does_not_print_remote_handoff_te
     assert!(output.status.success(), "fund should succeed: {output:?}");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("Fund URL: https://wallet.tempo.xyz/?action=fund"),
+        stderr.contains("Fund URL: https://wallet.tempo.xyz/agent?action=fund"),
         "{stderr}"
     );
     assert!(
