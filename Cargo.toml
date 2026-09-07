@@ -26,7 +26,7 @@ all = "warn"
 
 [workspace.dependencies]
 alloy = { version = "2.0", default-features = false, features = ["std", "providers", "provider-http", "reqwest", "signer-local", "sol-types", "contract", "rpc-types"] }
-base64 = "0.22"
+base64 = "0.23"
 clap = { version = "4.6", features = ["derive", "env"] }
 clap_complete = "4.6"
 colored = "3.1"
