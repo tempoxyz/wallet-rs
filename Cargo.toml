@@ -65,4 +65,4 @@ assert_cmd = "2.2"
 tempo-test = { path = "crates/tempo-test" }
 axum = "0.8"
 predicates = "3.1"
-serial_test = "3.2"
+serial_test = "4.0"
